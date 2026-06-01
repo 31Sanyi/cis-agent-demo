@@ -184,6 +184,8 @@ export type WorkflowSummary = {
     name?: string;
     reason?: string;
     confidence?: number;
+    rationale?: string;
+    source?: string;
     priority?: number;
     metadata?: Record<string, unknown>;
   }>;
@@ -193,6 +195,8 @@ export type WorkflowSummary = {
     objective?: string;
     outputs?: string[];
     depends_on?: string[];
+    description?: string;
+    status?: string;
     priority?: number;
     metadata?: Record<string, unknown>;
   }>;
