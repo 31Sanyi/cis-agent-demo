@@ -57,6 +57,17 @@ from app.schemas.agent_io import (
     ReportWriterOutput,
 )
 from app.schemas.workflow_state import ConditionalRoute, WorkflowEngine, WorkflowState
+from app.schemas.survey import (
+    Survey,
+    SurveyAnalysis,
+    SurveyGenerateRequest,
+    SurveyPainPoint,
+    SurveyQuestion,
+    SurveyResponseBatch,
+    SurveyReviseRequest,
+    SurveyRevisionResponse,
+    SurveyUploadResponse,
+)
 
 __all__ = [
     "AgentMessage",
@@ -113,4 +124,13 @@ __all__ = [
     "ConditionalRoute",
     "WorkflowEngine",
     "WorkflowState",
+    "Survey",
+    "SurveyAnalysis",
+    "SurveyGenerateRequest",
+    "SurveyPainPoint",
+    "SurveyQuestion",
+    "SurveyResponseBatch",
+    "SurveyReviseRequest",
+    "SurveyRevisionResponse",
+    "SurveyUploadResponse",
 ]

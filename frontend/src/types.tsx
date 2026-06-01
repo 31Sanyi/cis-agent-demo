@@ -7,6 +7,7 @@ export type {
   QaResult,
   Report,
   SearchTestResult,
+  SurveyPlannerContext,
   SwotAnalysis,
   SwotItem,
   Task,
@@ -34,7 +35,12 @@ export const statusClass: Record<string, string> = {
   manual_review: "bg-amber-100 text-warning border-amber-300",
   running: "bg-blue-100 text-accent border-blue-300",
   pending: "bg-white text-slate-500 border-line",
-  created: "bg-white text-slate-500 border-line"
+  created: "bg-white text-slate-500 border-line",
+  draft: "bg-blue-100 text-accent border-blue-300",
+  revised: "bg-blue-100 text-accent border-blue-300",
+  exported: "bg-slate-100 text-slate-700 border-line",
+  responses_uploaded: "bg-amber-100 text-warning border-amber-300",
+  analyzed: "bg-green-100 text-success border-green-300"
 };
 
 export const statusLabel: Record<string, string> = {
@@ -45,7 +51,12 @@ export const statusLabel: Record<string, string> = {
   manual_review: "需要人工复核",
   running: "运行中",
   pending: "待执行",
-  created: "已创建"
+  created: "已创建",
+  draft: "问卷草稿",
+  revised: "已修改",
+  exported: "已导出",
+  responses_uploaded: "已上传反馈",
+  analyzed: "已分析"
 };
 
 export const schemaStatusLabel: Record<string, string> = {

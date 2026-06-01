@@ -17,26 +17,41 @@ from app.services.trace_service import TraceService
 
 
 FEATURE_KEYWORDS = {
-    "AI": ["ai", "artificial intelligence"],
-    "automation": ["automation", "automated"],
-    "collaboration": ["collaboration", "collaborative", "team"],
-    "pricing": ["pricing", "price", "plan"],
-    "integration": ["integration", "integrations"],
-    "analytics": ["analytics", "analysis", "dashboard"],
-    "security": ["security", "compliance"],
-    "mobile": ["mobile", "app"],
-    "API": ["api", "developer"],
-    "workflow": ["workflow", "process"],
+    "AI": ["ai", "artificial intelligence", "智能", "人工智能"],
+    "automation": ["automation", "automated", "自动化"],
+    "collaboration": ["collaboration", "collaborative", "team", "协作", "团队", "办公"],
+    "pricing": ["pricing", "price", "plan", "定价", "价格", "套餐"],
+    "integration": ["integration", "integrations", "集成"],
+    "analytics": ["analytics", "analysis", "dashboard", "分析", "看板"],
+    "security": ["security", "compliance", "安全", "合规"],
+    "mobile": ["mobile", "app", "移动端"],
+    "API": ["api", "developer", "接口", "开发者"],
+    "workflow": ["workflow", "process", "流程"],
 }
 
-PRICING_KEYWORDS = ["free", "trial", "pricing", "subscription", "enterprise", "plan", "quote"]
+PRICING_KEYWORDS = [
+    "free",
+    "trial",
+    "pricing",
+    "subscription",
+    "enterprise",
+    "plan",
+    "quote",
+    "免费",
+    "试用",
+    "订阅",
+    "企业版",
+    "套餐",
+    "定价",
+    "价格",
+]
 PERSONA_KEYWORDS = {
-    "enterprise teams": ["enterprise", "procurement"],
-    "team operators": ["team", "operations"],
-    "developers": ["developer", "engineering"],
-    "marketing teams": ["marketer", "marketing"],
-    "product teams": ["product team", "product manager"],
-    "students": ["student", "education"],
+    "企业团队": ["enterprise", "procurement", "企业"],
+    "团队用户": ["team", "operations", "团队"],
+    "开发者": ["developer", "engineering", "开发者"],
+    "市场团队": ["marketer", "marketing", "市场"],
+    "产品团队": ["product team", "product manager", "产品团队", "产品经理"],
+    "学生": ["student", "education", "学生"],
 }
 
 
@@ -436,7 +451,9 @@ class AnalystAgent:
         if not evidence:
             return ["Evidence is insufficient"]
         return [
-            "free/trial signal" if any(word in self._evidence_text(item).lower() for word in ["free", "trial"]) else "paid/enterprise signal"
+            "free/trial signal"
+            if any(word in self._evidence_text(item).lower() for word in ["free", "trial", "免费", "试用"])
+            else "paid/enterprise signal"
             for item in evidence[:3]
         ]
 

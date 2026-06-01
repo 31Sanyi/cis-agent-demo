@@ -440,6 +440,10 @@ class LangGraphWorkflowRunner:
                 selected_dimensions=state.get("selected_dimensions", []),
                 writer_guidance=state.get("downstream_guidance").writer if state.get("downstream_guidance") else [],
                 intent_classification=state.get("intent_classification"),
+                survey_needed=state.get("survey_needed", False),
+                survey_recommended=state.get("survey_recommended", False),
+                survey_objective=state.get("survey_objective"),
+                survey_inputs=state.get("survey_inputs"),
             )
         )
         return {

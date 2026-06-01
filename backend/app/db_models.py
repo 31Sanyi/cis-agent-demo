@@ -78,3 +78,35 @@ class QaRecordRow(Base):
     task_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
     run_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class SurveyRecordRow(Base):
+    __tablename__ = "surveys"
+
+    survey_id: Mapped[str] = mapped_column(String, primary_key=True)
+    task_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    run_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class SurveyResponseBatchRecordRow(Base):
+    __tablename__ = "survey_response_batches"
+
+    batch_id: Mapped[str] = mapped_column(String, primary_key=True)
+    survey_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class SurveyAnalysisRecordRow(Base):
+    __tablename__ = "survey_analyses"
+
+    analysis_id: Mapped[str] = mapped_column(String, primary_key=True)
+    survey_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    batch_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

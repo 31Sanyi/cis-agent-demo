@@ -19,6 +19,7 @@ AgentName = Literal[
     "QaAgent",
     "SurveyAgent",
     "QuestionnaireAgent",
+    "SurveyAnalysisAgent",
     "EvidenceGate",
     "HumanReviewAgent",
     "FinalReport",
@@ -81,6 +82,7 @@ class Evidence(BaseModel):
     relevance_level: Literal["high", "medium", "low", "unrelated"] = "high"
     relevance_reason: str = "Mock or legacy evidence is treated as relevant by default."
     entity_match_signals: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
     content_mode: Literal["snippet", "page"] = "snippet"
     page_fetch_success: bool = False
     page_title: str | None = None

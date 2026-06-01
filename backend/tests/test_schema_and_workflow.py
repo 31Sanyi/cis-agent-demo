@@ -355,6 +355,20 @@ def test_analyst_evidence_extracts_pricing_and_persona(db_session):
     assert output.user_persona.persona_name in {"企业团队", "团队用户", "开发者", "市场团队", "产品团队", "学生"}
 
 
+def test_analyst_evidence_keeps_chinese_keyword_extraction(db_session):
+    task = make_task(db_session)
+    trace_service = TraceService(db_session)
+    evidence = [
+        Evidence(source_type="public_web", url="https://example.com/features-cn", source_domain="example.com", source_quality="official", snippet="产品支持人工智能自动化、团队协作、流程集成、数据分析和安全合规能力。", confidence=0.9),
+        Evidence(source_type="public_web", url="https://example.com/pricing-cn", source_domain="example.com", source_quality="official", snippet="定价页面包含免费试用、订阅套餐和企业版价格。", confidence=0.9),
+        Evidence(source_type="public_web", url="https://example.com/users-cn", source_domain="example.com", source_quality="unknown", snippet="企业团队、开发者、市场团队、产品经理和学生用户均有提及。", confidence=0.7),
+    ]
+    output = AnalystAgent(trace_service).run(AnalystInput(task=task, evidence=evidence, analyst_mode="evidence"))
+    assert "AI" in output.feature_tree.core_features
+    assert output.pricing_model.evidence_ids
+    assert output.user_persona.persona_name in {"企业团队", "团队用户", "开发者", "市场团队", "产品团队", "学生"}
+
+
 def test_analyst_insufficient_evidence_is_conservative_and_qa_suggests(db_session):
     task = make_task(db_session)
     trace_service = TraceService(db_session)

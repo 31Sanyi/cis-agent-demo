@@ -181,6 +181,10 @@ class MockWorkflowRunner:
                 selected_dimensions=plan.selected_dimensions,
                 writer_guidance=plan.downstream_guidance.writer if plan.downstream_guidance else [],
                 intent_classification=plan.intent_classification,
+                survey_needed=plan.survey_needed,
+                survey_recommended=plan.survey_recommended,
+                survey_objective=plan.survey_objective,
+                survey_inputs=plan.survey_inputs,
             )
         )
         return evidence, analysis, writer_output

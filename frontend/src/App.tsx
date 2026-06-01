@@ -1,4 +1,4 @@
-import { Play } from "lucide-react";
+import { BarChart3, Network, Play } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "./api/client";
 import { apiRecorder, getApiRecorderSnapshot } from "./api/recorder";
@@ -11,10 +11,14 @@ import { ReportView } from "./components/ReportView";
 import { TaskForm } from "./components/TaskForm";
 import { TaskList } from "./components/TaskList";
 import { TraceViewer } from "./components/TraceViewer";
+import { SurveyWorkspacePage } from "./pages/SurveyWorkspacePage";
 import type { Claim, CollectorDiagnostics, CollectorStatus, Dag, DemoMode, Evidence, LlmStatus, QaResult, Report, SearchTestResult, Task, TaskRun, TraceRecord, WriterDiagnostics, WorkflowSummary } from "./types";
 import { Pill } from "./types";
 
+type Workspace = "competitive" | "survey";
+
 export default function App() {
+  const [workspace, setWorkspace] = useState<Workspace>("competitive");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [task, setTask] = useState<Task>();
   const [dag, setDag] = useState<Dag>();
@@ -211,8 +215,27 @@ export default function App() {
           </div>
           {task && <div className="flex items-center gap-3 text-sm"><span>当前任务：{task.task_id}</span><Pill value={task.status} /></div>}
         </div>
+        <nav className="mt-4 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setWorkspace("competitive")}
+            className={`inline-flex items-center gap-2 rounded border px-3 py-2 text-sm font-semibold ${workspace === "competitive" ? "border-white bg-white text-ink" : "border-slate-500 bg-transparent text-slate-200"}`}
+          >
+            <Network size={16} /> 竞品分析工作台
+          </button>
+          <button
+            type="button"
+            onClick={() => setWorkspace("survey")}
+            className={`inline-flex items-center gap-2 rounded border px-3 py-2 text-sm font-semibold ${workspace === "survey" ? "border-white bg-white text-ink" : "border-slate-500 bg-transparent text-slate-200"}`}
+          >
+            <BarChart3 size={16} /> 问卷分析工作台
+          </button>
+        </nav>
       </header>
 
+      {workspace === "survey" && <SurveyWorkspacePage />}
+
+      {workspace === "competitive" && (
       <div className="p-4">
         <div className="mb-4 grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.65fr)]">
           <TaskForm onCreated={handleCreated} />
@@ -471,6 +494,7 @@ export default function App() {
           <TraceViewer traces={traces} />
         </div>
       </div>
+      )}
     </main>
   );
 }

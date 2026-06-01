@@ -32,7 +32,7 @@ class LlmClient:
     def __init__(self) -> None:
         self.provider = os.getenv("LLM_PROVIDER", "openai_compatible")
         self.api_key = os.getenv("LLM_API_KEY", "")
-        self.base_url = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+        self.base_url = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
         self.model = os.getenv("LLM_MODEL", "gpt-4o-mini")
         self.timeout = self._float_env("LLM_TIMEOUT", 120.0)
 

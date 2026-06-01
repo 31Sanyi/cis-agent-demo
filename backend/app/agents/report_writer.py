@@ -432,6 +432,10 @@ class ReportWriterAgent:
         return {
             "intent_classification": input_data.intent_classification,
             "selected_dimensions": self._selected_dimensions(input_data),
+            "survey_needed": input_data.survey_needed,
+            "survey_recommended": input_data.survey_recommended,
+            "survey_objective": input_data.survey_objective,
+            "survey_inputs": input_data.survey_inputs.model_dump(mode="json") if input_data.survey_inputs else None,
             "writer_guidance": [item for item in input_data.writer_guidance if item],
         }
 

@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -112,6 +112,10 @@ class ReportWriterInput(BaseModel):
     selected_dimensions: list[str] = Field(default_factory=list)
     writer_guidance: list[str] = Field(default_factory=list)
     intent_classification: str | None = None
+    survey_needed: bool = False
+    survey_recommended: bool = False
+    survey_objective: str | None = None
+    survey_inputs: PlannerSurveyInput | None = None
 
 
 class ReportWriterOutput(BaseModel):

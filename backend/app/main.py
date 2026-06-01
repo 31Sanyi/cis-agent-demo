@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
+from app.api.survey_routes import router as survey_router
 from app.database import init_db
 
 app = FastAPI(title="CIS Multi-Agent Competitor Analysis Demo")
@@ -26,3 +27,4 @@ def health_check() -> dict[str, str]:
 
 
 app.include_router(router)
+app.include_router(survey_router)

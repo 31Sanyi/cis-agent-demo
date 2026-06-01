@@ -149,6 +149,31 @@ npm run build
 - 展示 Run History，支持切换历史运行并回放对应 Evidence、Report、QA 和 Trace
 - 点击报告 Claim 后查看对应 Evidence
 - Trace Viewer 支持按 Agent 过滤
+- 独立的问卷分析工作台，支持按话题生成问卷、按任务/Run 生成问卷、手工改题、导出模板、上传反馈并查看分析结果
+- Survey 模块支持痛点验证型问卷设计、多格式反馈导入，以及 SurveyEvidence -> Evidence 标准转换
+
+## 问卷工作台
+
+当前版本的 Survey / Questionnaire 模块是独立工作台，不直接参与主竞品分析 DAG，但会消费 Planner 和 Report 的上下文来生成更贴近任务目标的问卷。
+
+主要能力：
+
+- 从任务最新 Run 的 Planner / Report 快照生成痛点验证型问卷
+- 从任意 topic 直接生成独立问卷
+- 支持 CSV / XLSX / JSON / TXT / Markdown 反馈导入
+- 自动生成 `pain_point_validation`、`claim_validation_matrix`、`recommended_report_revisions`
+- 上传后会生成 `SurveyEvidence`，并同步转成标准 `Evidence(source_type=\"survey\")`
+
+重要说明：
+
+- 问卷工作台里的 `Planner 问卷规划` 永远读取任务最新 Run 的 planner 快照，而不是固定使用本地 fallback
+- 如果最新 Run 的 Planner 判断 `survey_needed=false` 且 `survey_recommended=false`，页面会显示“暂无明确目标/主题/假设”，这表示当前 Run 不建议问卷，不是前端未刷新
+- 如果任务从未运行过主 workflow，Survey 模块会退回到本地 fallback planner context，以保证问卷能力仍可用
+
+更完整的说明见：
+
+- `docs/survey_module_mvp.md`
+- `docs/survey_module_upgrade_sync.md`
 
 ## Phase 10: TaskRun 与 run_id 隔离
 
