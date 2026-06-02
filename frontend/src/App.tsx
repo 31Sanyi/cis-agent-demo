@@ -13,6 +13,7 @@ import { TaskList } from "./components/TaskList";
 import { TraceViewer } from "./components/TraceViewer";
 import { SurveyWorkspacePage } from "./pages/SurveyWorkspacePage";
 import type { Claim, CollectorDiagnostics, CollectorStatus, Dag, DemoMode, Evidence, LlmStatus, QaResult, Report, SearchTestResult, Task, TaskRun, TraceRecord, WriterDiagnostics, WorkflowSummary } from "./types";
+import { reportContractSource, workflowContractSource } from "./lib/contractSelectors";
 import { Pill } from "./types";
 
 type Workspace = "competitive" | "survey";
@@ -36,7 +37,7 @@ export default function App() {
   const [writerMode, setWriterMode] = useState<"mock" | "llm">("mock");
   const [collectorMode, setCollectorMode] = useState<"mock" | "web">("mock");
   const [analystMode, setAnalystMode] = useState<"mock" | "evidence" | "llm">("evidence");
-  const [workflowEngine, setWorkflowEngine] = useState<"custom" | "langgraph">("custom");
+  const [workflowEngine, setWorkflowEngine] = useState<"custom" | "langgraph">("langgraph");
   const [workflowSummary, setWorkflowSummary] = useState<WorkflowSummary>();
   const [llmStatus, setLlmStatus] = useState<LlmStatus>();
   const [collectorStatus, setCollectorStatus] = useState<CollectorStatus>();
@@ -167,8 +168,13 @@ export default function App() {
     }
   }
 
-  const writerDiagnostics = report?.json_report.writer_diagnostics as WriterDiagnostics | undefined;
+  const writerDiagnostics = (report?.json_report.diagnostics?.writer_diagnostics ?? report?.json_report.writer_diagnostics) as WriterDiagnostics | undefined;
   const collectorDiagnostics = latestCollectorDiagnostics(traces);
+  const workflowCore = workflowSummary?.core;
+  const workflowExtensions = workflowSummary?.extensions;
+  const workflowDiagnostics = workflowSummary?.diagnostics;
+  const workflowContract = workflowContractSource(workflowSummary);
+  const reportContract = reportContractSource(report);
   const llmStatusLabel = !llmStatus
     ? "LLM 状态未知"
     : !llmStatus.api_key_configured
@@ -237,6 +243,13 @@ export default function App() {
 
       {workspace === "competitive" && (
       <div className="p-4">
+        <section className="mb-4 rounded border border-line bg-white p-4 text-sm text-slate-700">
+          <div className="font-semibold">Current Product Boundary</div>
+          <div className="mt-1">Primary workflow: LangGraph competitive-analysis run.</div>
+          <div>Legacy fallback: Custom Runner with a shorter execution path.</div>
+          <div>Questionnaire and survey work: follow-up sidecar workflow, not an always-on main DAG node.</div>
+        </section>
+
         <div className="mb-4 grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(360px,0.65fr)]">
           <TaskForm onCreated={handleCreated} />
           <DemoGuide />
@@ -326,8 +339,8 @@ export default function App() {
             value={workflowEngine}
             onChange={(event) => setWorkflowEngine(event.target.value as "custom" | "langgraph")}
           >
-            <option value="custom">Custom Runner</option>
-            <option value="langgraph">LangGraph Runner</option>
+            <option value="langgraph">LangGraph Runner (Primary)</option>
+            <option value="custom">Custom Runner (Legacy Fallback)</option>
           </select>
           <span className="rounded border border-line bg-white px-3 py-2 text-sm">
             LLM：{llmStatusLabel}
@@ -432,21 +445,39 @@ export default function App() {
             {workflowSummary && (
               <div className="mt-2 rounded border border-line bg-panel px-3 py-2">
                 <div className="flex flex-wrap gap-x-5 gap-y-1">
-                  <span>Workflow Engine: {workflowSummary.workflow_engine_used ?? "-"}</span>
-                  <span>requested: {workflowSummary.workflow_engine_requested ?? "-"}</span>
-                  <span>rework_count: {workflowSummary.rework_count ?? 0}</span>
-                  <span>final_status: {workflowSummary.final_status ?? "-"}</span>
-                  {!!workflowSummary.selected_dimensions?.length && <span>planner dimensions: {workflowSummary.selected_dimensions.join(", ")}</span>}
-                  {workflowSummary.workflow_engine_used === "langgraph" && <span className="font-semibold text-accent">LangGraph Runner</span>}
+                  <span>Workflow Engine: {workflowCore?.workflow_engine_used ?? workflowSummary.workflow_engine_used ?? "-"}</span>
+                  <span>role: {workflowCore?.workflow_role ?? workflowSummary.workflow_role ?? "-"}</span>
+                  <span>requested: {workflowCore?.workflow_engine_requested ?? workflowSummary.workflow_engine_requested ?? "-"}</span>
+                  <span>rework_count: {workflowCore?.rework_count ?? workflowSummary.rework_count ?? 0}</span>
+                  <span>final_status: {workflowCore?.final_status ?? workflowSummary.final_status ?? "-"}</span>
+                  <span>frontend contract: {workflowContract}</span>
+                  <span>domain pack: {workflowCore?.domain_pack?.display_name ?? "-"}</span>
+                  {!!(workflowSummary.selected_dimensions?.length || workflowCore?.selected_dimensions?.length) && <span>planner dimensions: {(workflowSummary.selected_dimensions ?? workflowCore?.selected_dimensions ?? []).join(", ")}</span>}
+                  {(workflowCore?.workflow_engine_used ?? workflowSummary.workflow_engine_used) === "langgraph" && <span className="font-semibold text-accent">LangGraph Runner</span>}
                 </div>
-                {!!workflowSummary.downstream_guidance?.writer?.length && (
+                {(workflowExtensions?.primary_workflow_kind || workflowSummary.primary_workflow_kind || workflowSummary.survey_integration_mode) && (
                   <div className="mt-1 text-xs text-slate-600">
-                    writer guidance: {workflowSummary.downstream_guidance.writer.slice(0, 3).join(" | ")}
+                    primary workflow: {workflowExtensions?.primary_workflow_kind ?? workflowSummary.primary_workflow_kind ?? "-"} | survey: {workflowSummary.survey_integration_mode ?? "-"}
                   </div>
                 )}
-                {!!workflowSummary.conditional_routes_taken?.length && (
+                {(workflowDiagnostics?.workflow_data_source ?? workflowSummary.workflow_data_source) === "trace_recovered_summary" && (
                   <div className="mt-1 text-xs text-slate-600">
-                    routes: {workflowSummary.conditional_routes_taken.map((item) => `${item.from_node ?? "qa"} -> ${item.to_node ?? "-"} (${item.reason ?? "qa"})`).join(" | ")}
+                    This workflow summary was recovered from `WorkflowEngine` trace output rather than the original run response.
+                  </div>
+                )}
+                {!!(workflowSummary.downstream_guidance?.writer?.length || workflowCore?.downstream_guidance?.writer?.length) && (
+                  <div className="mt-1 text-xs text-slate-600">
+                    writer guidance: {(workflowSummary.downstream_guidance?.writer ?? workflowCore?.downstream_guidance?.writer ?? []).slice(0, 3).join(" | ")}
+                  </div>
+                )}
+                {report && (
+                  <div className="mt-1 text-xs text-slate-600">
+                    report contract: {reportContract}
+                  </div>
+                )}
+                {!!(workflowSummary.conditional_routes_taken?.length || workflowCore?.conditional_routes_taken?.length) && (
+                  <div className="mt-1 text-xs text-slate-600">
+                    routes: {(workflowSummary.conditional_routes_taken ?? workflowCore?.conditional_routes_taken ?? []).map((item) => `${item.from_node ?? "qa"} -> ${item.to_node ?? "-"} (${item.reason ?? "qa"})`).join(" | ")}
                   </div>
                 )}
                 {workflowSummary.evidence_gate_output && (
@@ -515,7 +546,9 @@ function recoverWorkflowSummary(traces: TraceRecord[]): WorkflowSummary | undefi
   if (!trace?.output_summary) return undefined;
   try {
     const parsed = JSON.parse(trace.output_summary) as WorkflowSummary;
-    return parsed.workflow_engine_used ? parsed : undefined;
+    return parsed.workflow_engine_used
+      ? { ...parsed, workflow_data_source: parsed.workflow_data_source ?? "trace_recovered_summary" }
+      : undefined;
   } catch {
     return undefined;
   }

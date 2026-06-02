@@ -79,18 +79,142 @@ export type SwotAnalysis = {
   threats: SwotItem[];
 };
 
+export type CapabilitySignal = {
+  competitor?: string | null;
+  capability_area: string;
+  normalized_feature: string;
+  evidence_ids: string[];
+  confidence: number;
+  insufficient_evidence: boolean;
+  matched_keywords?: string[];
+  support_summary?: string;
+};
+
+export type CapabilityBucket = {
+  competitor?: string | null;
+  capability_area: string;
+  normalized_features: string[];
+  evidence_ids: string[];
+  confidence: number;
+  insufficient_evidence: boolean;
+  summary: string;
+  signals: CapabilitySignal[];
+};
+
+export type CapabilityMap = {
+  domain_pack?: DomainPackReference | null;
+  competitor_capabilities?: Record<string, CapabilityBucket[]>;
+  aggregate_capabilities?: CapabilityBucket[];
+  unmapped_signals?: CapabilitySignal[];
+  evidence_ids?: string[];
+};
+
+export type AnalystKnowledgePayload = Record<string, unknown> & {
+  capability_map?: CapabilityMap;
+  feature_tree?: {
+    core_features?: Record<string, string[]>;
+    differentiators?: string[];
+    evidence_ids?: string[];
+  };
+};
+
+export type PlannerCoreSummary = {
+  intent_classification?: string | null;
+  selected_dimensions?: string[];
+  writer_guidance?: string[];
+  domain_pack?: DomainPackReference | null;
+};
+
+export type DomainPackReference = {
+  domain_pack_id: string;
+  display_name: string;
+  category_key?: string | null;
+  source?: string;
+  industry_label?: string | null;
+  supported_dimensions?: string[];
+  feature_taxonomy_keys?: string[];
+  source_preferences?: string[];
+  survey_theme_hints?: string[];
+  metadata?: Record<string, unknown>;
+};
+
+export type ProductProfileDomainExtension = {
+  region?: string | null;
+  industry?: string | null;
+  domain_pack?: DomainPackReference | null;
+  metadata?: Record<string, unknown>;
+};
+
+export type ProductProfileWorkflowExtension = {
+  analyst_mode?: string | null;
+  selected_dimensions?: string[];
+  insufficient_evidence?: boolean | null;
+  supporting_evidence_ids?: string[];
+  competitor_analysis?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+};
+
+export type SurveyExtensionSummary = {
+  survey_needed?: boolean;
+  survey_recommended?: boolean;
+  survey_objective?: string | null;
+  survey_inputs?: Record<string, unknown> | null;
+  survey_guidance?: string[];
+};
+
+export type QuestionnaireFollowUpRecommendation = {
+  recommendation_type?: string;
+  launch_mode?: string;
+  recommended?: boolean;
+  required?: boolean;
+  objective?: string | null;
+  respondent_type?: string | null;
+  question_themes?: string[];
+  hypotheses?: string[];
+  guidance?: string[];
+  selected_dimensions?: string[];
+  rationale?: string | null;
+  domain_pack?: DomainPackReference | null;
+  metadata?: Record<string, unknown>;
+};
+
+export type ReportCorePayload = {
+  knowledge?: AnalystKnowledgePayload;
+  swot?: SwotAnalysis | null;
+  planner?: PlannerCoreSummary | null;
+  claims?: Claim[];
+  competitor_coverage?: Record<string, unknown>;
+};
+
+export type ReportExtensionPayload = {
+  survey?: SurveyExtensionSummary | null;
+  questionnaire_follow_up?: QuestionnaireFollowUpRecommendation | null;
+  domain?: ProductProfileDomainExtension;
+  workflow?: ProductProfileWorkflowExtension;
+};
+
+export type ReportDiagnosticsPayload = {
+  writer_mode?: string;
+  llm_fallback_reason?: string | null;
+  writer_diagnostics?: WriterDiagnostics;
+};
+
 export type Report = {
   report_id: string;
   task_id: string;
   run_id?: string | null;
   markdown: string;
   json_report: {
+    core?: ReportCorePayload;
+    extensions?: ReportExtensionPayload;
+    diagnostics?: ReportDiagnosticsPayload;
     knowledge?: Record<string, unknown>;
     swot?: SwotAnalysis;
     planner?: {
       intent_classification?: string | null;
       selected_dimensions?: string[];
       writer_guidance?: string[];
+      domain_pack?: DomainPackReference | null;
     };
     claims?: Claim[];
     writer_diagnostics?: WriterDiagnostics;
@@ -151,10 +275,86 @@ export type SearchTestResult = {
 };
 
 export type WorkflowSummary = {
+  core?: {
+    run_id?: string;
+    task_id?: string;
+    workflow_engine_requested?: string;
+    workflow_engine_used?: string;
+    workflow_role?: string;
+    intent_classification?: string | null;
+    ambiguity_level?: string | null;
+    scope_type?: string | null;
+    scope_size?: string | null;
+    selected_dimensions?: string[];
+    downstream_guidance?: {
+      collector?: string[];
+      analyst?: string[];
+      writer?: string[];
+      qa?: string[];
+      survey?: string[];
+    } | null;
+    confirmed_scope?: Record<string, unknown> | null;
+    inferred_scope?: Record<string, unknown> | null;
+    suggested_scope?: Record<string, unknown> | null;
+    recommended_next_constraints?: string[];
+    clarification_targets?: string[];
+    candidate_competitors?: Array<Record<string, unknown>>;
+    planning_stages?: Array<Record<string, unknown>>;
+    domain_pack?: DomainPackReference | null;
+    swot_analysis?: SwotAnalysis | null;
+    rework_context?: Record<string, unknown> | null;
+    node_sequence?: string[];
+    conditional_routes_taken?: Array<{ from_node?: string; to_node?: string; reason?: string; rework_count?: number; final_status?: string }>;
+    rework_count?: number;
+    final_status?: string;
+    elapsed_time_ms?: number;
+  };
+  extensions?: {
+    primary_workflow_kind?: string;
+    follow_up_workflow_kind?: string;
+    survey?: SurveyExtensionSummary | null;
+    questionnaire_follow_up?: QuestionnaireFollowUpRecommendation | null;
+  };
+  diagnostics?: {
+    workflow_data_source?: string;
+    runner_capability_notes?: string[];
+    evidence_gate_output?: {
+      evidence_gate_passed?: boolean;
+      missing_relevant_evidence_competitors?: string[];
+      relevant_evidence_count_by_competitor?: Record<string, number>;
+      unrelated_evidence_count_by_competitor?: Record<string, number>;
+      suggested_route?: string | null;
+      suggested_action?: string;
+    };
+    page_fetch_output?: {
+      page_fetch_provider?: string;
+      page_fetch_attempted?: boolean;
+      page_fetch_attempt_count?: number;
+      page_fetch_success_count?: number;
+      page_fetch_failed_count?: number;
+      page_fetch_skipped_count?: number;
+      page_fetch_fallback_count?: number;
+      page_fetch_error_summary?: Record<string, number>;
+      avg_content_chars?: number;
+      max_content_chars?: number;
+      fetched_evidence_ids?: string[];
+      skipped_evidence_ids?: string[];
+      run_id?: string | null;
+    };
+    run_isolation_strategy?: string;
+    run_cleanup_summary?: Record<string, unknown>;
+    error_message?: string | null;
+  };
   run_id?: string;
   task_id?: string;
   workflow_engine_requested?: string;
   workflow_engine_used?: string;
+  workflow_role?: "primary" | "legacy_fallback" | string;
+  primary_workflow_kind?: string;
+  follow_up_workflow_kind?: string;
+  survey_integration_mode?: string;
+  workflow_data_source?: "execution_backed_summary" | "trace_recovered_summary" | string;
+  runner_capability_notes?: string[];
   intent_classification?: string | null;
   ambiguity_level?: string | null;
   scope_type?: string | null;
@@ -207,6 +407,7 @@ export type WorkflowSummary = {
     qa?: string[];
     survey?: string[];
   } | null;
+  domain_pack?: DomainPackReference | null;
   swot_analysis?: SwotAnalysis | null;
   page_fetch_output?: {
     page_fetch_provider?: string;
@@ -228,6 +429,7 @@ export type WorkflowSummary = {
 export type CollectorDiagnostics = {
   collector_mode_requested?: string;
   collector_mode_used?: string;
+  domain_pack_id?: string;
   web_search_attempted?: boolean;
   web_search_success?: boolean;
   query_count?: number;
@@ -369,6 +571,12 @@ export type Survey = {
   questions: SurveyQuestion[];
   pain_points: SurveyPainPoint[];
   question_pain_mapping: Record<string, string>;
+  extensions?: {
+    context?: {
+      planner_snapshot?: Record<string, unknown>;
+      report_context_snapshot?: Record<string, unknown>;
+    };
+  };
   planner_snapshot: Record<string, unknown>;
   report_context_snapshot: Record<string, unknown>;
   expected_analysis_dimensions: string[];
@@ -468,6 +676,34 @@ export type SurveyUploadResponse = {
 
 export type SurveyPlannerContext = {
   task: Task;
+  launch_contract?: {
+    task_id: string;
+    run_id: string;
+    launch_mode?: string;
+    recommendation?: QuestionnaireFollowUpRecommendation | null;
+    planner_context: {
+      intent_classification: string;
+      survey_needed: boolean;
+      survey_recommended?: boolean;
+      survey_objective?: string | null;
+      survey_inputs?: {
+        objective?: string | null;
+        respondent_type?: string | null;
+        question_themes: string[];
+        hypotheses: string[];
+        metadata: Record<string, unknown>;
+      } | null;
+      extracted_context?: Record<string, unknown>;
+      selected_dimensions: string[];
+      downstream_guidance?: {
+        survey?: string[] | null;
+      } | null;
+      questionnaire_follow_up?: QuestionnaireFollowUpRecommendation | null;
+      diagnostics?: Record<string, unknown>;
+    };
+    report_context?: Record<string, unknown>;
+    diagnostics?: Record<string, unknown>;
+  };
   planner_context: {
     intent_classification: string;
     survey_needed: boolean;
@@ -485,5 +721,7 @@ export type SurveyPlannerContext = {
     downstream_guidance?: {
       survey?: string[] | null;
     } | null;
+    questionnaire_follow_up?: QuestionnaireFollowUpRecommendation | null;
+    diagnostics?: Record<string, unknown>;
   };
 };

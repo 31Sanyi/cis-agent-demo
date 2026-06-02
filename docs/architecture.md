@@ -14,19 +14,24 @@ flowchart LR
     API --> TraceSvc[TraceService]
     API --> EvidenceSvc[EvidenceService]
     API --> ReportSvc[ReportService]
-    API --> Runner[MockWorkflowRunner]
+    API --> Runner[RunnerFactory]
 
     TaskSvc --> DB[(SQLite)]
     TraceSvc --> DB
     EvidenceSvc --> DB
     ReportSvc --> DB
 
-    Runner --> Planner[PlannerAgent]
-    Runner --> Collector[CollectorAgent]
-    Runner --> Analyst[AnalystAgent]
-    Runner --> Writer[ReportWriterAgent]
-    Runner --> QA[QaAgent]
-    Runner --> Final[FinalReportAgent]
+    Runner --> LG[LangGraphWorkflowRunner<br/>primary competitive-analysis workflow]
+    Runner --> Custom[CustomWorkflowRunner<br/>legacy fallback]
+
+    LG --> Planner[PlannerAgent]
+    LG --> Collector[CollectorAgent]
+    LG --> Gate[EvidenceGate]
+    LG --> Fetcher[PageFetcher]
+    LG --> Analyst[AnalystAgent]
+    LG --> Writer[ReportWriterAgent]
+    LG --> QA[QaAgent]
+    LG --> Final[FinalReportAgent]
 
     Collector --> WebSearch[WebSearchClient / Tavily Search API]
     WebSearch --> PublicWeb[公开网页搜索结果]
@@ -41,9 +46,10 @@ flowchart LR
 
 1. 前端通过 FastAPI REST API 创建任务、运行 workflow、查看报告、Evidence、QA 和 Trace。
 2. 后端使用 SQLite 存储 Task、Evidence、Report、QA 和 Trace，便于本地演示和快速调试。
-3. CollectorAgent 支持 Mock 与 Web 两种模式，Web 模式通过 Tavily 搜索公开网页结果并转换为 Evidence。
-4. ReportWriterAgent 支持 Mock 与 LLM 两种模式，LLM 模式使用 OpenAI-compatible Chat Completions。
-5. Web Search 或 LLM 调用失败时不会中断 workflow，而是 fallback 到 Mock，并在 Trace 中记录原因。
+3. LangGraphWorkflowRunner 是当前的 primary competitive-analysis workflow，CustomWorkflowRunner 仅作 legacy fallback。
+4. CollectorAgent 支持 Mock 与 Web 两种模式，Web 模式通过 Tavily 搜索公开网页结果并转换为 Evidence。
+5. ReportWriterAgent 支持 Mock 与 LLM 两种模式，LLM 模式使用 OpenAI-compatible Chat Completions。
+6. Questionnaire / Survey 是后续侧边流程，目前由 SurveyService 和 survey routes 独立触发，不是主 DAG 的常驻节点。
 
 ## 2. Agent DAG 工作流图
 

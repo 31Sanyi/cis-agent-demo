@@ -1,5 +1,5 @@
 import { Database } from "lucide-react";
-import type { Evidence, Report, SwotAnalysis, SwotItem } from "../types";
+import type { CapabilityBucket, CapabilityMap, Evidence, Report, SwotAnalysis, SwotItem } from "../types";
 
 export function KnowledgeView({
   report,
@@ -10,10 +10,11 @@ export function KnowledgeView({
   evidence?: Evidence[];
   onEvidenceIdsSelect?: (ids: string[]) => void;
 }) {
-  const knowledge = report?.json_report.knowledge;
+  const knowledge = report?.json_report.core?.knowledge ?? report?.json_report.knowledge;
   if (!knowledge) return null;
 
-  const swot = report?.json_report.swot;
+  const swot = report?.json_report.core?.swot ?? report?.json_report.swot;
+  const capabilityMap = (knowledge as { capability_map?: CapabilityMap }).capability_map;
   const evidenceById = new Map((evidence ?? []).map((item) => [item.evidence_id, item]));
 
   return (
@@ -23,6 +24,12 @@ export function KnowledgeView({
         <div className="mb-3">
           <div className="mb-2 text-sm font-semibold text-slate-700">Structured SWOT Summary</div>
           <SwotPanel swot={swot} evidenceById={evidenceById} onEvidenceIdsSelect={onEvidenceIdsSelect} />
+        </div>
+      )}
+      {capabilityMap && (
+        <div className="mb-3">
+          <div className="mb-2 text-sm font-semibold text-slate-700">Normalized Capability Map</div>
+          <CapabilityMapPanel capabilityMap={capabilityMap} evidenceById={evidenceById} onEvidenceIdsSelect={onEvidenceIdsSelect} />
         </div>
       )}
       <div className="grid gap-3 md:grid-cols-2">
@@ -53,6 +60,85 @@ export function KnowledgeView({
         })}
       </div>
     </section>
+  );
+}
+
+function CapabilityMapPanel({
+  capabilityMap,
+  evidenceById,
+  onEvidenceIdsSelect,
+}: {
+  capabilityMap: CapabilityMap;
+  evidenceById: Map<string, Evidence>;
+  onEvidenceIdsSelect?: (ids: string[]) => void;
+}) {
+  const entries = Object.entries(capabilityMap.competitor_capabilities ?? {});
+  if (!entries.length) return null;
+  return (
+    <div className="space-y-3">
+      <div className="rounded border border-line bg-panel p-3 text-xs text-slate-700">
+        domain pack: {capabilityMap.domain_pack?.display_name ?? "-"}
+      </div>
+      <div className="grid gap-3 md:grid-cols-2">
+        {entries.map(([competitor, buckets]) => (
+          <div key={competitor} className="rounded border border-line bg-panel p-3">
+            <div className="mb-2 text-sm font-semibold">{competitor}</div>
+            <div className="space-y-2">
+              {buckets.map((bucket) => (
+                <CapabilityBucketCard
+                  key={`${competitor}-${bucket.capability_area}`}
+                  bucket={bucket}
+                  evidenceById={evidenceById}
+                  onEvidenceIdsSelect={onEvidenceIdsSelect}
+                />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CapabilityBucketCard({
+  bucket,
+  evidenceById,
+  onEvidenceIdsSelect,
+}: {
+  bucket: CapabilityBucket;
+  evidenceById: Map<string, Evidence>;
+  onEvidenceIdsSelect?: (ids: string[]) => void;
+}) {
+  return (
+    <div className="rounded border border-line bg-white p-3 text-xs leading-5">
+      <div className="font-semibold">
+        {bucket.capability_area} · {Math.round(bucket.confidence * 100)}%
+      </div>
+      <div className="mt-1">{bucket.summary}</div>
+      {!!bucket.normalized_features.length && (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {bucket.normalized_features.slice(0, 4).map((feature) => (
+            <span key={feature} className="rounded border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] text-accent">
+              {feature}
+            </span>
+          ))}
+        </div>
+      )}
+      {!!bucket.evidence_ids.length && (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {bucket.evidence_ids.slice(0, 4).map((id) => (
+            <button
+              key={id}
+              className="rounded border border-line bg-panel px-2 py-0.5 text-slate-700 hover:border-accent"
+              onClick={() => onEvidenceIdsSelect?.([id])}
+              title={evidenceById.get(id)?.source_domain ?? id}
+            >
+              {id}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

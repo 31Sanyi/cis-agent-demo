@@ -1,4 +1,5 @@
 import type { CollectorDiagnostics, WorkflowSummary } from "../types";
+import { workflowContractSource } from "../lib/contractSelectors";
 
 export function PlannerSummaryCard({
   workflowSummary,
@@ -7,14 +8,29 @@ export function PlannerSummaryCard({
   workflowSummary?: WorkflowSummary;
   collectorDiagnostics?: CollectorDiagnostics;
 }) {
+  const core = workflowSummary?.core;
+  const extensions = workflowSummary?.extensions;
+  const diagnostics = workflowSummary?.diagnostics;
+  const survey = extensions?.survey;
+  const questionnaireFollowUp = extensions?.questionnaire_follow_up;
+  const domainPack = core?.domain_pack;
+  const summaryContract = workflowContractSource(workflowSummary);
   const hasPlannerSummary = Boolean(
+    core?.selected_dimensions?.length ||
     workflowSummary?.selected_dimensions?.length ||
+    core?.intent_classification ||
     workflowSummary?.intent_classification ||
+    core?.ambiguity_level ||
     workflowSummary?.ambiguity_level ||
+    core?.scope_type ||
     workflowSummary?.scope_type ||
+    core?.scope_size ||
     workflowSummary?.scope_size ||
+    core?.candidate_competitors?.length ||
     workflowSummary?.candidate_competitors?.length ||
+    typeof survey?.survey_needed === "boolean" ||
     typeof workflowSummary?.survey_needed === "boolean" ||
+    core?.recommended_next_constraints?.length ||
     workflowSummary?.recommended_next_constraints?.length,
   );
   const hasCollectorGuidance = Boolean(
@@ -32,19 +48,40 @@ export function PlannerSummaryCard({
         <div className="rounded border border-line bg-white p-4">
           <h2 className="mb-3 text-base font-semibold">Planner Summary</h2>
           <div className="grid gap-2 text-sm md:grid-cols-2">
-            <SummaryItem label="intent" value={workflowSummary?.intent_classification ?? "-"} />
-            <SummaryItem label="ambiguity" value={workflowSummary?.ambiguity_level ?? "-"} />
-            <SummaryItem label="scope type" value={workflowSummary?.scope_type ?? "-"} />
-            <SummaryItem label="scope size" value={workflowSummary?.scope_size ?? "-"} />
-            <SummaryItem label="survey needed" value={formatBoolean(workflowSummary?.survey_needed)} />
-            <SummaryItem label="survey recommended" value={formatBoolean(workflowSummary?.survey_recommended)} />
-            <SummaryItem label="run id" value={workflowSummary?.run_id ?? "-"} />
+            <SummaryItem label="workflow role" value={workflowSummary?.workflow_role ?? "-"} />
+            <SummaryItem label="intent" value={core?.intent_classification ?? workflowSummary?.intent_classification ?? "-"} />
+            <SummaryItem label="ambiguity" value={core?.ambiguity_level ?? workflowSummary?.ambiguity_level ?? "-"} />
+            <SummaryItem label="scope type" value={core?.scope_type ?? workflowSummary?.scope_type ?? "-"} />
+            <SummaryItem label="scope size" value={core?.scope_size ?? workflowSummary?.scope_size ?? "-"} />
+            <SummaryItem label="domain pack" value={domainPack?.display_name ?? "-"} />
+            <SummaryItem label="survey needed" value={formatBoolean(survey?.survey_needed ?? workflowSummary?.survey_needed)} />
+            <SummaryItem label="survey recommended" value={formatBoolean(survey?.survey_recommended ?? workflowSummary?.survey_recommended)} />
+            <SummaryItem label="run id" value={core?.run_id ?? workflowSummary?.run_id ?? "-"} />
           </div>
+          {(extensions?.primary_workflow_kind || workflowSummary?.primary_workflow_kind || workflowSummary?.survey_integration_mode || diagnostics?.workflow_data_source || workflowSummary?.workflow_data_source) && (
+            <div className="mt-3 rounded border border-line bg-panel p-3 text-xs leading-5 text-slate-700">
+              {(extensions?.primary_workflow_kind || workflowSummary?.primary_workflow_kind) && <div>primary workflow: {extensions?.primary_workflow_kind ?? workflowSummary?.primary_workflow_kind}</div>}
+              {workflowSummary?.survey_integration_mode && <div>survey integration: {workflowSummary.survey_integration_mode}</div>}
+              {(diagnostics?.workflow_data_source || workflowSummary?.workflow_data_source) && <div>summary source: {diagnostics?.workflow_data_source ?? workflowSummary?.workflow_data_source}</div>}
+              <div>frontend contract: {summaryContract}</div>
+              {domainPack?.domain_pack_id && <div>domain pack id: {domainPack.domain_pack_id}</div>}
+            </div>
+          )}
+          {!!(diagnostics?.runner_capability_notes ?? workflowSummary?.runner_capability_notes)?.length && (
+            <div className="mt-3 rounded border border-line bg-panel p-3 text-xs leading-5 text-slate-700">
+              <div className="mb-1 font-semibold">Architecture Notes</div>
+              {(diagnostics?.runner_capability_notes ?? workflowSummary?.runner_capability_notes ?? []).map((item) => (
+                <div key={item}>- {item}</div>
+              ))}
+            </div>
+          )}
           <div className="mt-3">
             <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Selected Dimensions</div>
             <div className="flex flex-wrap gap-2">
               {(workflowSummary?.selected_dimensions?.length
                 ? workflowSummary.selected_dimensions
+                : core?.selected_dimensions?.length
+                  ? core.selected_dimensions
                 : ["No planner-selected dimensions returned"]).map((dimension) => (
                 <span
                   key={dimension}
@@ -55,11 +92,11 @@ export function PlannerSummaryCard({
               ))}
             </div>
           </div>
-          {!!workflowSummary?.candidate_competitors?.length && (
+          {!!(core?.candidate_competitors?.length || workflowSummary?.candidate_competitors?.length) && (
             <div className="mt-3">
               <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Candidate Competitors</div>
               <div className="flex flex-wrap gap-2">
-                {workflowSummary.candidate_competitors.slice(0, 4).map((item, index) => (
+                {(workflowSummary?.candidate_competitors ?? (core?.candidate_competitors as Array<{ name?: string; confidence?: number }> | undefined) ?? []).slice(0, 4).map((item, index) => (
                   <span
                     key={`${item.name ?? "candidate"}-${index}`}
                     className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-700"
@@ -71,20 +108,29 @@ export function PlannerSummaryCard({
               </div>
             </div>
           )}
-          {!!workflowSummary?.recommended_next_constraints?.length && (
+          {!!(core?.recommended_next_constraints?.length || workflowSummary?.recommended_next_constraints?.length) && (
             <div className="mt-3 rounded border border-line bg-panel p-3 text-xs leading-5 text-slate-700">
               <div className="mb-1 font-semibold">Planner constraints</div>
-              {workflowSummary.recommended_next_constraints.slice(0, 3).map((item) => (
+              {(workflowSummary?.recommended_next_constraints ?? core?.recommended_next_constraints ?? []).slice(0, 3).map((item) => (
                 <div key={item}>- {item}</div>
               ))}
             </div>
           )}
-          {!!workflowSummary?.downstream_guidance?.writer?.length && (
+          {!!((core?.downstream_guidance?.writer?.length || workflowSummary?.downstream_guidance?.writer?.length)) && (
             <div className="mt-3 rounded border border-line bg-panel p-3 text-xs leading-5 text-slate-700">
               <div className="mb-1 font-semibold">Writer guidance</div>
-              {workflowSummary.downstream_guidance.writer.slice(0, 3).map((item) => (
+              {(workflowSummary?.downstream_guidance?.writer ?? core?.downstream_guidance?.writer ?? []).slice(0, 3).map((item) => (
                 <div key={item}>- {item}</div>
               ))}
+            </div>
+          )}
+          {questionnaireFollowUp && (
+            <div className="mt-3 rounded border border-line bg-panel p-3 text-xs leading-5 text-slate-700">
+              <div className="mb-1 font-semibold">Questionnaire Follow-up</div>
+              <div>launch mode: {questionnaireFollowUp.launch_mode ?? "follow_up_sidecar"}</div>
+              <div>recommended: {formatBoolean(questionnaireFollowUp.recommended)}</div>
+              <div>required: {formatBoolean(questionnaireFollowUp.required)}</div>
+              <div>objective: {questionnaireFollowUp.objective ?? "-"}</div>
             </div>
           )}
         </div>
@@ -105,6 +151,10 @@ export function PlannerSummaryCard({
             <SummaryItem
               label="collector mode"
               value={collectorDiagnostics?.collector_mode_used ?? collectorDiagnostics?.collector_mode_requested ?? "-"}
+            />
+            <SummaryItem
+              label="domain pack"
+              value={collectorDiagnostics?.domain_pack_id ?? "-"}
             />
           </div>
           {!!collectorDiagnostics?.effective_query_count_by_competitor && (

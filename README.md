@@ -15,10 +15,10 @@ SQLite + SQLAlchemy
        |
 RunnerFactory
        |
-LangGraphWorkflowRunner:
+Primary workflow: LangGraphWorkflowRunner
 PlannerAgent -> CollectorAgent -> EvidenceGate -> PageFetcher -> AnalystAgent -> ReportWriterAgent -> QaAgent -> FinalReportAgent
 
-CustomWorkflowRunner:
+Legacy fallback: CustomWorkflowRunner
 PlannerAgent -> CollectorAgent -> AnalystAgent -> ReportWriterAgent -> QaAgent -> FinalReportAgent
 ```
 
@@ -154,7 +154,7 @@ npm run build
 
 ## 问卷工作台
 
-当前版本的 Survey / Questionnaire 模块是独立工作台，不直接参与主竞品分析 DAG，但会消费 Planner 和 Report 的上下文来生成更贴近任务目标的问卷。
+当前版本的 Survey / Questionnaire 模块是主竞品分析 workflow 之后的后续侧边流程，不是当前主竞品分析 DAG 的常驻节点，但会消费 Planner 和 Report 的上下文来生成更贴近任务目标的问卷。
 
 主要能力：
 
@@ -384,19 +384,21 @@ API query 参数 > WORKFLOW_ENGINE 环境变量 > 默认 custom
 
 ### 维护边界
 
-- `Custom Runner` 是 legacy stable fallback，只维护当前稳定主链路。
-- `LangGraph Runner` 是后续扩展主线，用 `StateGraph` 显式表达 DAG、QA conditional routing 和 auto_rework 循环。
+- `LangGraph Runner` 是当前推荐的 primary competitive-analysis workflow，用 `StateGraph` 显式表达 DAG、QA conditional routing 和 auto_rework 循环。
+- `Custom Runner` 是 legacy stable fallback，只维护较短的竞品分析主链路，不执行 EvidenceGate 或 PageFetcher。
 - 后续新增节点，例如 PageFetcher、Chunker、Indexer、Retriever、SWOTAgent、QuestionnaireAgent，只接入 LangGraph Runner。
 - Agent 业务逻辑只有一份，仍然在各 Agent 的 `run()` 方法中。
 - LangGraph node 只负责从 `WorkflowState` 取数据、构造现有 Input Schema、调用 Agent.run()、把 Output 写回 State，不复制 Agent 业务逻辑。
 
 ### LangGraph 路由
 
-当前 LangGraph 主链路：
+当前 primary LangGraph 主链路：
 
 ```text
-planner -> collector -> analyst -> report_writer -> qa -> final_report
+planner -> collector -> evidence_gate -> page_fetcher -> analyst -> report_writer -> qa -> final_report
 ```
+
+`QuestionnaireAgent` / survey flow 当前是后续侧边流程，由 survey routes 和 SurveyService 独立触发，不是这条主 DAG 的常驻节点。
 
 QA 后使用 conditional routing：
 

@@ -3,7 +3,21 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.agents.base import AgentExecutionError, AgentOutputValidationError, run_with_trace
-from app.schemas import Claim, QaResult, Report, ReportWriterInput, ReportWriterOutput, SwotAnalysis, SwotItem
+from app.schemas import (
+    Claim,
+    PlannerCoreSummary,
+    QaResult,
+    QuestionnaireFollowUpRecommendation,
+    Report,
+    ReportCorePayload,
+    ReportDiagnosticsPayload,
+    ReportExtensionPayload,
+    ReportWriterInput,
+    ReportWriterOutput,
+    SurveyExtensionSummary,
+    SwotAnalysis,
+    SwotItem,
+)
 from app.services.evidence_relevance_service import is_relevant_evidence
 from app.services.llm_client import LlmClient, parse_llm_json
 from app.services.trace_service import TraceService
@@ -93,18 +107,13 @@ class ReportWriterAgent:
             report = Report(
                 task_id=task.task_id,
                 markdown=markdown,
-                json_report={
-                    "knowledge": knowledge.model_dump(mode="json"),
-                    "swot": self._swot_payload(knowledge.swot),
-                    "claims": [claim.model_dump(mode="json") for claim in claims],
-                    "competitor_coverage": self._coverage_diagnostics(
-                        task.competitors, [claim.model_dump(mode="json") for claim in claims]
-                    ),
-                    "writer_mode": "mock",
-                    "planner": self._planner_report_payload(input_data),
-                    "llm_fallback_reason": fallback_reason,
-                    "writer_diagnostics": diagnostics,
-                },
+                json_report=self._report_json_payload(
+                    input_data=input_data,
+                    claims=claims,
+                    diagnostics=diagnostics,
+                    writer_mode="mock",
+                    llm_fallback_reason=fallback_reason,
+                ),
                 claims=claims,
                 qa_result=QaResult(task_id=task.task_id, status="passed"),
             )
@@ -245,18 +254,14 @@ class ReportWriterAgent:
             report = Report(
                 task_id=task.task_id,
                 markdown=payload.get("markdown_report", ""),
-                json_report={
-                    **(payload.get("json_report") if isinstance(payload.get("json_report"), dict) else {}),
-                    "knowledge": input_data.knowledge.model_dump(mode="json"),
-                    "swot": self._swot_payload(input_data.knowledge.swot),
-                    "claims": [claim.model_dump(mode="json") for claim in claims],
-                    "competitor_coverage": self._coverage_diagnostics(
-                        task.competitors, [claim.model_dump(mode="json") for claim in claims]
-                    ),
-                    "writer_mode": "llm",
-                    "planner": self._planner_report_payload(input_data),
-                    "writer_diagnostics": diagnostics,
-                },
+                json_report=self._report_json_payload(
+                    input_data=input_data,
+                    claims=claims,
+                    diagnostics=diagnostics,
+                    writer_mode="llm",
+                    llm_fallback_reason=None,
+                    base_payload=payload.get("json_report") if isinstance(payload.get("json_report"), dict) else None,
+                ),
                 claims=claims,
                 qa_result=QaResult(task_id=task.task_id, status="passed"),
             )
@@ -288,18 +293,13 @@ class ReportWriterAgent:
         report = Report(
             task_id=task.task_id,
             markdown=markdown,
-            json_report={
-                "knowledge": knowledge.model_dump(mode="json"),
-                "swot": self._swot_payload(knowledge.swot),
-                "claims": [claim.model_dump(mode="json") for claim in claims],
-                "competitor_coverage": self._coverage_diagnostics(
-                    task.competitors, [claim.model_dump(mode="json") for claim in claims]
-                ),
-                "writer_mode": "mock",
-                "planner": self._planner_report_payload(input_data),
-                "llm_fallback_reason": fallback_reason,
-                "writer_diagnostics": diagnostics,
-            },
+            json_report=self._report_json_payload(
+                input_data=input_data,
+                claims=claims,
+                diagnostics=diagnostics,
+                writer_mode="mock",
+                llm_fallback_reason=fallback_reason,
+            ),
             claims=claims,
             qa_result=QaResult(task_id=task.task_id, status="passed"),
         )
@@ -438,6 +438,78 @@ class ReportWriterAgent:
             "survey_inputs": input_data.survey_inputs.model_dump(mode="json") if input_data.survey_inputs else None,
             "writer_guidance": [item for item in input_data.writer_guidance if item],
         }
+
+    def _report_json_payload(
+        self,
+        *,
+        input_data: ReportWriterInput,
+        claims: list[Claim],
+        diagnostics: dict[str, Any],
+        writer_mode: str,
+        llm_fallback_reason: str | None,
+        base_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        claim_payloads = [claim.model_dump(mode="json") for claim in claims]
+        coverage = self._coverage_diagnostics(input_data.task.competitors, claim_payloads)
+        planner_payload = self._planner_report_payload(input_data)
+        core = ReportCorePayload(
+            knowledge=input_data.knowledge.model_dump(mode="json"),
+            swot=self._swot_payload(input_data.knowledge.swot),
+            claims=claim_payloads,
+            competitor_coverage=coverage,
+            planner=PlannerCoreSummary(
+                intent_classification=planner_payload.get("intent_classification"),
+                selected_dimensions=planner_payload.get("selected_dimensions") or [],
+                writer_guidance=planner_payload.get("writer_guidance") or [],
+                domain_pack=input_data.knowledge.product_profile.extensions.domain.domain_pack,
+            ),
+        )
+        extensions = ReportExtensionPayload(
+            survey=SurveyExtensionSummary(
+                survey_needed=bool(planner_payload.get("survey_needed", False)),
+                survey_recommended=bool(planner_payload.get("survey_recommended", False)),
+                survey_objective=planner_payload.get("survey_objective"),
+                survey_inputs=planner_payload.get("survey_inputs"),
+                survey_guidance=[],
+            ),
+            questionnaire_follow_up=input_data.questionnaire_follow_up
+            or QuestionnaireFollowUpRecommendation(
+                recommended=bool(planner_payload.get("survey_recommended", False)),
+                required=bool(planner_payload.get("survey_needed", False)),
+                objective=planner_payload.get("survey_objective"),
+                respondent_type=(planner_payload.get("survey_inputs") or {}).get("respondent_type"),
+                question_themes=list((planner_payload.get("survey_inputs") or {}).get("question_themes") or []),
+                hypotheses=list((planner_payload.get("survey_inputs") or {}).get("hypotheses") or []),
+                guidance=[],
+                selected_dimensions=planner_payload.get("selected_dimensions") or [],
+                domain_pack=input_data.knowledge.product_profile.extensions.domain.domain_pack,
+                metadata={"source": "report_writer_payload_fallback"},
+            ),
+            domain=input_data.knowledge.product_profile.extensions.domain,
+            workflow=input_data.knowledge.product_profile.extensions.workflow,
+        )
+        diagnostics_payload = ReportDiagnosticsPayload(
+            writer_mode=writer_mode,
+            llm_fallback_reason=llm_fallback_reason,
+            writer_diagnostics=diagnostics,
+        )
+        payload = dict(base_payload or {})
+        payload.update(
+            {
+                "knowledge": core.knowledge,
+                "swot": core.swot,
+                "claims": core.claims,
+                "competitor_coverage": core.competitor_coverage,
+                "writer_mode": writer_mode,
+                "planner": planner_payload,
+                "llm_fallback_reason": llm_fallback_reason,
+                "writer_diagnostics": diagnostics,
+                "core": core.model_dump(mode="json", exclude_none=True),
+                "extensions": extensions.model_dump(mode="json", exclude_none=True),
+                "diagnostics": diagnostics_payload.model_dump(mode="json", exclude_none=True),
+            }
+        )
+        return payload
 
     @staticmethod
     def _swot_payload(swot: SwotAnalysis) -> dict[str, Any]:

@@ -1,9 +1,13 @@
 export type {
+  CapabilityBucket,
+  CapabilityMap,
   Claim,
   CollectorDiagnostics,
   CollectorStatus,
   Dag,
+  DomainPackReference,
   Evidence,
+  QuestionnaireFollowUpRecommendation,
   QaResult,
   Report,
   SearchTestResult,

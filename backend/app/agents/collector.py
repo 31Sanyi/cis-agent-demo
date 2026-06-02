@@ -1,6 +1,7 @@
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from app.agents.base import run_with_trace
+from app.domain import resolve_domain_pack
 from app.schemas import CollectorInput, CollectorOutput, Evidence
 from app.services.evidence_relevance_service import apply_relevance
 from app.services.trace_service import TraceService
@@ -52,9 +53,11 @@ class CollectorAgent:
         )
 
     def _base_diagnostics(self, input_data: CollectorInput) -> dict:
+        resolved_domain_pack = resolve_domain_pack(input_data.task)
         return {
             "collector_mode_requested": input_data.collector_mode,
             "collector_mode_used": "mock",
+            "domain_pack_id": resolved_domain_pack.domain_pack_id,
             "search_provider": self.web_search_client.provider,
             "search_base_url_configured": bool(self.web_search_client.base_url),
             "has_search_api_key": bool(self.web_search_client.api_key),
@@ -112,7 +115,7 @@ class CollectorAgent:
         for competitor in task.competitors:
             query_plan = self._query_plan_for_competitor(
                 competitor,
-                task.industry,
+                task,
                 input_data.planner_query_hints,
                 input_data.gate_context,
             )
@@ -244,7 +247,7 @@ class CollectorAgent:
         query_plans = {
             competitor: self._query_plan_for_competitor(
                 competitor,
-                task.industry,
+                task,
                 input_data.planner_query_hints,
                 input_data.gate_context,
             )
@@ -326,8 +329,15 @@ class CollectorAgent:
         return CollectorOutput(evidence=evidence, diagnostics=diagnostics)
 
     @staticmethod
-    def _default_queries_for_competitor(competitor: str, industry: str) -> list[str]:
+    def _default_queries_for_competitor(competitor: str, task) -> list[str]:
+        resolved_domain_pack = resolve_domain_pack(task)
+        industry = task.industry
         has_chinese = any("\u4e00" <= char <= "\u9fff" for char in competitor)
+        if resolved_domain_pack.competitor_query_templates:
+            return [
+                template.format(competitor=competitor, industry=industry)
+                for template in resolved_domain_pack.competitor_query_templates
+            ]
         if has_chinese:
             return [
                 f"{competitor} 官网 功能 定价 企业版",
@@ -345,7 +355,7 @@ class CollectorAgent:
     def _query_plan_for_competitor(
         cls,
         competitor: str,
-        industry: str,
+        task,
         planner_query_hints: dict[str, list[str]] | None,
         gate_context: dict | None,
     ) -> dict[str, list[str]]:
@@ -357,7 +367,7 @@ class CollectorAgent:
         ]
         targeted_queries = cls._targeted_queries_for_competitor(competitor, gate_context)
         planner_queries = cls._dedupe_queries([*competitor_hints, *category_scope])
-        default_queries = cls._default_queries_for_competitor(competitor, industry)
+        default_queries = cls._default_queries_for_competitor(competitor, task)
         effective_queries = cls._dedupe_queries([*targeted_queries, *planner_queries, *default_queries])[:MAX_QUERY_COUNT_PER_COMPETITOR]
         return {
             "targeted_queries": targeted_queries,

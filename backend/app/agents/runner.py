@@ -185,6 +185,7 @@ class MockWorkflowRunner:
                 survey_recommended=plan.survey_recommended,
                 survey_objective=plan.survey_objective,
                 survey_inputs=plan.survey_inputs,
+                questionnaire_follow_up=plan.questionnaire_follow_up,
             )
         )
         return evidence, analysis, writer_output
@@ -269,6 +270,11 @@ class MockWorkflowRunner:
                         selected_dimensions=plan.selected_dimensions,
                         writer_guidance=plan.downstream_guidance.writer if plan.downstream_guidance else [],
                         intent_classification=plan.intent_classification,
+                        survey_needed=plan.survey_needed,
+                        survey_recommended=plan.survey_recommended,
+                        survey_objective=plan.survey_objective,
+                        survey_inputs=plan.survey_inputs,
+                        questionnaire_follow_up=plan.questionnaire_follow_up,
                     )
                 )
             elif current_qa.route_to == "AnalystAgent":
@@ -294,6 +300,11 @@ class MockWorkflowRunner:
                         selected_dimensions=plan.selected_dimensions,
                         writer_guidance=plan.downstream_guidance.writer if plan.downstream_guidance else [],
                         intent_classification=plan.intent_classification,
+                        survey_needed=plan.survey_needed,
+                        survey_recommended=plan.survey_recommended,
+                        survey_objective=plan.survey_objective,
+                        survey_inputs=plan.survey_inputs,
+                        questionnaire_follow_up=plan.questionnaire_follow_up,
                     )
                 )
             elif current_qa.route_to == "ReportWriterAgent":
@@ -320,6 +331,11 @@ class MockWorkflowRunner:
                         selected_dimensions=plan.selected_dimensions,
                         writer_guidance=plan.downstream_guidance.writer if plan.downstream_guidance else [],
                         intent_classification=plan.intent_classification,
+                        survey_needed=plan.survey_needed,
+                        survey_recommended=plan.survey_recommended,
+                        survey_objective=plan.survey_objective,
+                        survey_inputs=plan.survey_inputs,
+                        questionnaire_follow_up=plan.questionnaire_follow_up,
                     )
                 )
             else:
@@ -451,24 +467,33 @@ def default_dag(status: str) -> dict:
     active = status in {"running", "qa_failed", "completed", "manual_review"}
     return {
         "nodes": [
-            {"id": "PlannerAgent", "label": "规划任务范围和 DAG", "status": "completed" if active else "pending"},
-            {"id": "CollectorAgent", "label": "采集 Mock 证据", "status": "completed" if completed or manual else ("completed" if status == "qa_failed" else "pending")},
-            {"id": "EvidenceGate", "label": "校验证据相关性", "status": "completed" if completed else ("failed" if status == "qa_failed" else ("manual_review" if manual else "pending"))},
-            {"id": "AnalystAgent", "label": "抽取结构化竞品知识", "status": "completed" if completed or manual else ("completed" if status == "qa_failed" else "pending")},
-            {"id": "ReportWriterAgent", "label": "撰写带证据报告", "status": "completed" if completed else ("failed" if status == "qa_failed" else "pending")},
-            {"id": "QaAgent", "label": "校验输出质量", "status": "completed" if completed else ("manual_review" if manual else ("failed" if status == "qa_failed" else "pending"))},
-            {"id": "FinalReport", "label": "最终报告", "status": "completed" if completed else ("manual_review" if manual else "pending")},
+            {"id": "PlannerAgent", "label": "PlannerAgent", "status": "completed" if active else "pending"},
+            {"id": "CollectorAgent", "label": "CollectorAgent", "status": "completed" if completed or manual else ("completed" if status == "qa_failed" else "pending")},
+            {"id": "AnalystAgent", "label": "AnalystAgent", "status": "completed" if completed or manual else ("completed" if status == "qa_failed" else "pending")},
+            {"id": "ReportWriterAgent", "label": "ReportWriterAgent", "status": "completed" if completed else ("failed" if status == "qa_failed" else "pending")},
+            {"id": "QaAgent", "label": "QaAgent", "status": "completed" if completed else ("manual_review" if manual else ("failed" if status == "qa_failed" else "pending"))},
+            {"id": "FinalReport", "label": "FinalReportAgent", "status": "completed" if completed else ("manual_review" if manual else "pending")},
         ],
         "edges": [
-            {"source": "PlannerAgent", "target": "CollectorAgent", "label": "计划"},
-            {"source": "CollectorAgent", "target": "EvidenceGate", "label": "证据"},
-            {"source": "EvidenceGate", "target": "AnalystAgent", "label": "相关证据通过"},
-            {"source": "EvidenceGate", "target": "CollectorAgent", "label": "相关证据不足"},
-            {"source": "AnalystAgent", "target": "ReportWriterAgent", "label": "知识"},
-            {"source": "ReportWriterAgent", "target": "QaAgent", "label": "草稿"},
-            {"source": "QaAgent", "target": "FinalReport", "label": "通过"},
-            {"source": "QaAgent", "target": "CollectorAgent", "label": "缺少证据"},
-            {"source": "QaAgent", "target": "AnalystAgent", "label": "抽取错误"},
-            {"source": "QaAgent", "target": "ReportWriterAgent", "label": "返工"},
+            {"source": "PlannerAgent", "target": "CollectorAgent", "label": "plan"},
+            {"source": "CollectorAgent", "target": "AnalystAgent", "label": "evidence"},
+            {"source": "AnalystAgent", "target": "ReportWriterAgent", "label": "knowledge"},
+            {"source": "ReportWriterAgent", "target": "QaAgent", "label": "report"},
+            {"source": "QaAgent", "target": "FinalReport", "label": "passed"},
+            {"source": "QaAgent", "target": "CollectorAgent", "label": "missing_evidence"},
+            {"source": "QaAgent", "target": "AnalystAgent", "label": "invalid_extraction"},
+            {"source": "QaAgent", "target": "ReportWriterAgent", "label": "rework"},
         ],
+        "metadata": {
+            "workflow_engine": "custom",
+            "workflow_role": "legacy_fallback",
+            "primary_workflow_kind": "competitive_analysis_langgraph",
+            "display_path_kind": "custom_execution_path",
+            "survey_integration_mode": "follow_up_sidecar",
+            "notes": [
+                "Custom Runner is a limited legacy fallback path.",
+                "This DAG reflects the actual custom execution path and does not include EvidenceGate or PageFetcher.",
+                "Questionnaire and survey work are follow-up sidecar flows, not nodes in this DAG.",
+            ],
+        },
     }

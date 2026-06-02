@@ -1,9 +1,13 @@
 from collections import defaultdict
 
 from app.agents.base import run_with_trace
+from app.domain import domain_pack_reference, resolve_domain_pack
 from app.schemas import (
     AnalystInput,
     AnalystOutput,
+    CapabilityBucket,
+    CapabilityMap,
+    CapabilitySignal,
     Evidence,
     FeatureTree,
     PricingModel,
@@ -90,6 +94,7 @@ class AnalystAgent:
         task = input_data.task
         ids = self._ids(input_data.evidence)
         selected_dimensions = self._selected_dimensions(input_data)
+        capability_map = self._build_capability_map(task, input_data.evidence, competitor_order=task.competitors)
         diagnostics = self._diagnostics(
             input_data,
             "mock",
@@ -122,6 +127,23 @@ class AnalystAgent:
             strengths=["traceable evidence", "structured schema", "QA feedback loop"],
             weaknesses=["current demo still uses simplified extraction rules"],
             evidence_ids=ids[:2],
+            extensions={
+                "domain": {
+                    "region": task.region,
+                    "industry": task.industry,
+                    "domain_pack": domain_pack_reference(
+                        resolve_domain_pack(task),
+                        industry_label=task.industry,
+                        metadata={"owner": "AnalystAgent", "mode": "mock"},
+                    ).model_dump(mode="json"),
+                },
+                "workflow": {
+                    "analyst_mode": "mock",
+                    "selected_dimensions": selected_dimensions,
+                    "competitor_analysis": competitor_analysis,
+                    "capability_map": capability_map.model_dump(mode="json"),
+                },
+            },
             custom_dimensions={
                 "region": task.region,
                 "industry": task.industry,
@@ -131,8 +153,8 @@ class AnalystAgent:
             },
         )
         feature_tree = FeatureTree(
-            core_features={competitor: ["collaboration", "workflow", "pricing"] for competitor in task.competitors},
-            differentiators=["claim-to-evidence traceability", "manual review fallback"],
+            core_features=self._legacy_feature_tree_projection(capability_map) or {competitor: ["collaboration", "workflow", "pricing"] for competitor in task.competitors},
+            differentiators=self._legacy_differentiators(capability_map) or ["claim-to-evidence traceability", "manual review fallback"],
             evidence_ids=ids,
         )
         pricing = PricingModel(
@@ -160,6 +182,7 @@ class AnalystAgent:
         return AnalystOutput(
             product_profile=profile,
             feature_tree=feature_tree,
+            capability_map=capability_map,
             pricing_model=pricing,
             user_persona=persona,
             swot=swot,
@@ -174,8 +197,8 @@ class AnalystAgent:
         evidence_by_competitor = self._group_by_competitor(usable_evidence, task.competitors)
         all_evidence_by_competitor = self._group_by_competitor(input_data.evidence, task.competitors)
         ids = self._ids(usable_evidence)
+        capability_map = self._build_capability_map(task, usable_evidence, competitor_order=task.competitors)
         competitor_analysis: dict[str, dict] = {}
-        core_features: dict[str, list[str]] = {}
         aggregate_feature_hits: dict[str, list[Evidence]] = defaultdict(list)
         pricing_tiers: list[str] = []
         persona_goals: list[str] = []
@@ -188,7 +211,7 @@ class AnalystAgent:
         for competitor in task.competitors:
             competitor_evidence = sorted(evidence_by_competitor.get(competitor, []), key=lambda item: item.confidence, reverse=True)
             competitor_ids = self._ids(competitor_evidence)
-            feature_hits = self._feature_hits(competitor_evidence)
+            feature_hits = self._feature_hits(task, competitor_evidence)
             pricing_evidence = self._keyword_evidence(competitor_evidence, PRICING_KEYWORDS)
             persona_hits = self._persona_hits(competitor_evidence)
             insufficient = len(competitor_evidence) < 1 or (len(feature_hits) + len(pricing_evidence) + len(persona_hits)) < 1
@@ -220,15 +243,10 @@ class AnalystAgent:
             }
             for feature, values in feature_hits.items():
                 aggregate_feature_hits[feature].extend(values)
-                core_features[f"{competitor} / {feature}"] = self._feature_labels(feature, values)
             pricing_tiers.append(f"{competitor}: {', '.join(pricing_labels)}")
             persona_goals.append(f"{competitor}: evaluate fit for {', '.join(persona_labels[:2])}")
             persona_pain_points.append(f"{competitor}: needs more official, pricing, and user-feedback evidence cross-checks")
             persona_triggers.append(f"{competitor}: product selection and competitor replacement")
-
-        for feature, values in aggregate_feature_hits.items():
-            core_features.setdefault(feature, self._feature_labels(feature, values))
-
         missing_competitors = [competitor for competitor, records in evidence_by_competitor.items() if not records]
         insufficient = bool(missing_competitors) or any(item["insufficient_evidence"] for item in competitor_analysis.values())
         diagnostics = self._diagnostics(
@@ -254,6 +272,8 @@ class AnalystAgent:
                     competitor: len(records) for competitor, records in all_evidence_by_competitor.items()
                 },
                 "content_source_used": self._content_source_summary(usable_evidence),
+                "capability_area_count": len(capability_map.aggregate_capabilities),
+                "unmapped_capability_signal_count": len(capability_map.unmapped_signals),
                 "selected_dimensions": selected_dimensions,
                 "selected_dimension_count": len(selected_dimensions),
             }
@@ -273,6 +293,25 @@ class AnalystAgent:
             strengths=self._strengths_from_features(dict(aggregate_feature_hits)) or ["Evidence is insufficient for a confident conclusion."],
             weaknesses=["Conclusions remain limited by available public evidence coverage per competitor."],
             evidence_ids=ids[: min(5, len(ids))],
+            extensions={
+                "domain": {
+                    "region": task.region,
+                    "industry": task.industry,
+                    "domain_pack": domain_pack_reference(
+                        resolve_domain_pack(task),
+                        industry_label=task.industry,
+                        metadata={"owner": "AnalystAgent", "mode": "evidence"},
+                    ).model_dump(mode="json"),
+                },
+                "workflow": {
+                    "analyst_mode": "evidence",
+                    "selected_dimensions": selected_dimensions,
+                    "insufficient_evidence": insufficient,
+                    "supporting_evidence_ids": ids,
+                    "competitor_analysis": competitor_analysis,
+                    "capability_map": capability_map.model_dump(mode="json"),
+                },
+            },
             custom_dimensions={
                 "region": task.region,
                 "industry": task.industry,
@@ -284,8 +323,8 @@ class AnalystAgent:
             },
         )
         feature_tree = FeatureTree(
-            core_features=core_features or {"insufficient evidence": ["Evidence is insufficient for a confident conclusion."]},
-            differentiators=self._strengths_from_features(dict(aggregate_feature_hits)) or ["Evidence is insufficient for a confident conclusion."],
+            core_features=self._legacy_feature_tree_projection(capability_map) or {"insufficient evidence": ["Evidence is insufficient for a confident conclusion."]},
+            differentiators=self._legacy_differentiators(capability_map) or self._strengths_from_features(dict(aggregate_feature_hits)) or ["Evidence is insufficient for a confident conclusion."],
             evidence_ids=ids,
         )
         pricing = PricingModel(
@@ -324,6 +363,7 @@ class AnalystAgent:
         return AnalystOutput(
             product_profile=profile,
             feature_tree=feature_tree,
+            capability_map=capability_map,
             pricing_model=pricing,
             user_persona=persona,
             swot=swot,
@@ -392,6 +432,18 @@ class AnalystAgent:
         return [item.evidence_id for item in evidence] or ["insufficient_evidence"]
 
     @staticmethod
+    def _dedupe(items) -> list[str]:
+        seen: set[str] = set()
+        output: list[str] = []
+        for item in items:
+            value = str(item).strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            output.append(value)
+        return output
+
+    @staticmethod
     def _compact(text: str) -> str:
         return text[:120].replace("\n", " ")
 
@@ -406,11 +458,210 @@ class AnalystAgent:
             "snippet": sum(1 for item in evidence if not item.content_excerpt),
         }
 
-    def _feature_hits(self, evidence: list[Evidence]) -> dict[str, list[Evidence]]:
-        hits: dict[str, list[Evidence]] = defaultdict(list)
+    def _build_capability_map(self, task, evidence: list[Evidence], *, competitor_order: list[str]) -> CapabilityMap:
+        resolved_domain_pack = resolve_domain_pack(task)
+        domain_pack = domain_pack_reference(
+            resolved_domain_pack,
+            industry_label=task.industry,
+            metadata={"owner": "AnalystAgent", "source": "capability_extraction"},
+        )
+        feature_taxonomy = {
+            **{feature: tuple(keywords) for feature, keywords in FEATURE_KEYWORDS.items()},
+            **resolved_domain_pack.feature_taxonomy,
+        }
+        competitor_capabilities: dict[str, list[CapabilityBucket]] = {}
+        aggregate_buckets: list[CapabilityBucket] = []
+        unmapped_signals: list[CapabilitySignal] = []
+
+        for competitor in competitor_order:
+            competitor_evidence = [
+                item for item in evidence
+                if item.competitor == competitor or (item.competitor is None and len(competitor_order) == 1)
+            ]
+            buckets, competitor_unmapped = self._capability_buckets_for_competitor(
+                competitor,
+                competitor_evidence,
+                feature_taxonomy=feature_taxonomy,
+            )
+            competitor_capabilities[competitor] = buckets
+            unmapped_signals.extend(competitor_unmapped)
+
+        aggregate_by_area: dict[str, list[CapabilityBucket]] = defaultdict(list)
+        for buckets in competitor_capabilities.values():
+            for bucket in buckets:
+                aggregate_by_area[bucket.capability_area].append(bucket)
+
+        for area, buckets in aggregate_by_area.items():
+            aggregate_buckets.append(
+                CapabilityBucket(
+                    competitor=None,
+                    capability_area=area,
+                    normalized_features=self._dedupe(
+                        feature
+                        for bucket in buckets
+                        for feature in bucket.normalized_features
+                    ),
+                    evidence_ids=self._dedupe(
+                        evidence_id
+                        for bucket in buckets
+                        for evidence_id in bucket.evidence_ids
+                    ),
+                    confidence=round(sum(bucket.confidence for bucket in buckets) / max(len(buckets), 1), 2),
+                    insufficient_evidence=all(bucket.insufficient_evidence for bucket in buckets),
+                    summary=f"Observed across {len(buckets)} competitor capability buckets.",
+                    signals=[
+                        signal
+                        for bucket in buckets
+                        for signal in bucket.signals
+                    ][:8],
+                )
+            )
+
+        return CapabilityMap(
+            domain_pack=domain_pack,
+            competitor_capabilities=competitor_capabilities,
+            aggregate_capabilities=sorted(aggregate_buckets, key=lambda item: item.capability_area),
+            unmapped_signals=unmapped_signals[:12],
+            evidence_ids=self._ids(evidence),
+        )
+
+    def _capability_buckets_for_competitor(
+        self,
+        competitor: str,
+        evidence: list[Evidence],
+        *,
+        feature_taxonomy: dict[str, tuple[str, ...]],
+    ) -> tuple[list[CapabilityBucket], list[CapabilitySignal]]:
+        signals_by_area: dict[str, list[CapabilitySignal]] = defaultdict(list)
+        unmapped: list[CapabilitySignal] = []
+
         for item in evidence:
             text = self._evidence_text(item).lower()
-            for feature, keywords in FEATURE_KEYWORDS.items():
+            matched_area = False
+            for area, keywords in feature_taxonomy.items():
+                matched_keywords = [keyword for keyword in keywords if keyword.lower() in text]
+                if not matched_keywords:
+                    continue
+                matched_area = True
+                signals_by_area[area].append(
+                    CapabilitySignal(
+                        competitor=competitor,
+                        capability_area=area,
+                        normalized_feature=area,
+                        evidence_ids=[item.evidence_id],
+                        confidence=round(min(0.95, max(0.45, item.confidence)), 2),
+                        insufficient_evidence=False,
+                        matched_keywords=matched_keywords[:4],
+                        support_summary=self._compact(self._evidence_text(item)),
+                    )
+                )
+            if not matched_area:
+                fallback_area = self._generic_capability_area(text)
+                if fallback_area is None:
+                    unmapped.append(
+                        CapabilitySignal(
+                            competitor=competitor,
+                            capability_area="other",
+                            normalized_feature="unmapped_signal",
+                            evidence_ids=[item.evidence_id],
+                            confidence=round(min(0.6, max(0.3, item.confidence)), 2),
+                            insufficient_evidence=False,
+                            matched_keywords=[],
+                            support_summary=self._compact(self._evidence_text(item)),
+                        )
+                    )
+                    continue
+                signals_by_area[fallback_area].append(
+                    CapabilitySignal(
+                        competitor=competitor,
+                        capability_area=fallback_area,
+                        normalized_feature=fallback_area,
+                        evidence_ids=[item.evidence_id],
+                        confidence=round(min(0.7, max(0.35, item.confidence)), 2),
+                        insufficient_evidence=False,
+                        matched_keywords=[],
+                        support_summary=self._compact(self._evidence_text(item)),
+                    )
+                )
+
+        if not evidence and not signals_by_area:
+            return (
+                [
+                    CapabilityBucket(
+                        competitor=competitor,
+                        capability_area="evidence_gap",
+                        normalized_features=[],
+                        evidence_ids=["insufficient_evidence"],
+                        confidence=0.25,
+                        insufficient_evidence=True,
+                        summary="Relevant public evidence is insufficient for capability extraction.",
+                        signals=[],
+                    )
+                ],
+                [],
+            )
+
+        if unmapped:
+            signals_by_area["other"].extend(unmapped)
+
+        buckets: list[CapabilityBucket] = []
+        for area, signals in signals_by_area.items():
+            evidence_ids = self._dedupe(evidence_id for signal in signals for evidence_id in signal.evidence_ids)
+            buckets.append(
+                CapabilityBucket(
+                    competitor=competitor,
+                    capability_area=area,
+                    normalized_features=self._dedupe(signal.normalized_feature for signal in signals),
+                    evidence_ids=evidence_ids,
+                    confidence=round(sum(signal.confidence for signal in signals) / max(len(signals), 1), 2),
+                    insufficient_evidence=False,
+                    summary=f"{competitor} shows evidence-backed signals for {area}.",
+                    signals=signals[:8],
+                )
+            )
+        return sorted(buckets, key=lambda item: item.capability_area), unmapped
+
+    def _legacy_feature_tree_projection(self, capability_map: CapabilityMap) -> dict[str, list[str]]:
+        projected: dict[str, list[str]] = {}
+        for area_bucket in capability_map.aggregate_capabilities:
+            labels = []
+            for bucket in capability_map.competitor_capabilities.values():
+                for competitor_bucket in bucket:
+                    if competitor_bucket.capability_area != area_bucket.capability_area:
+                        continue
+                    labels.append(
+                        f"{competitor_bucket.competitor}: {', '.join(competitor_bucket.normalized_features[:3]) or competitor_bucket.capability_area}"
+                    )
+            if labels:
+                projected[area_bucket.capability_area] = labels[:4]
+        return projected
+
+    def _legacy_differentiators(self, capability_map: CapabilityMap) -> list[str]:
+        differentiators = []
+        for bucket in capability_map.aggregate_capabilities[:4]:
+            if bucket.insufficient_evidence:
+                continue
+            differentiators.append(
+                f"Evidence-backed capability area: {bucket.capability_area}"
+            )
+        return differentiators
+
+    def _generic_capability_area(self, text: str) -> str | None:
+        for area, keywords in FEATURE_KEYWORDS.items():
+            if any(keyword.lower() in text for keyword in keywords):
+                return area.lower()
+        return None
+
+    def _feature_hits(self, task, evidence: list[Evidence]) -> dict[str, list[Evidence]]:
+        hits: dict[str, list[Evidence]] = defaultdict(list)
+        resolved_domain_pack = resolve_domain_pack(task)
+        feature_keywords = {
+            **FEATURE_KEYWORDS,
+            **{feature: list(keywords) for feature, keywords in resolved_domain_pack.feature_taxonomy.items()},
+        }
+        for item in evidence:
+            text = self._evidence_text(item).lower()
+            for feature, keywords in feature_keywords.items():
                 if any(keyword.lower() in text for keyword in keywords):
                     hits[feature].append(item)
         return dict(hits)

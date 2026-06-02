@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Any, Literal, TypedDict
 
 from app.schemas.agent_io import (
@@ -10,9 +12,11 @@ from app.schemas.agent_io import (
 )
 from app.schemas.models import (
     AnalysisDimensionPlan,
+    CapabilityMap,
     Chunk,
     ClaimSupportResult,
     DimensionResult,
+    DomainPackReference,
     Evidence,
     PlannerAmbiguityLevel,
     PlannerCompetitorCandidate,
@@ -23,14 +27,20 @@ from app.schemas.models import (
     PlannerStage,
     PlannerSurveyInput,
     PlannerDownstreamGuidance,
+    PlannerCoreSummary,
+    QuestionnaireFollowUpRecommendation,
     QaResult,
     Report,
+    SurveyExtensionSummary,
     RetrievalResult,
     ReworkContext,
     SwotAnalysis,
     SurveyEvidence,
     Task,
     TaskRun,
+    WorkflowSummaryCorePayload,
+    WorkflowSummaryDiagnosticsPayload,
+    WorkflowSummaryExtensionPayload,
 )
 
 
@@ -76,12 +86,16 @@ class WorkflowState(TypedDict, total=False):
     scope_type: PlannerScopeType | None
     scope_size: PlannerScopeSize | None
     extracted_context: PlannerExtractedContext | None
+    domain_pack: DomainPackReference | None
     selected_dimensions: list[str]
     analysis_dimension_plan: AnalysisDimensionPlan | None
+    planner_core_summary: PlannerCoreSummary | None
     survey_needed: bool
     survey_recommended: bool
     survey_objective: str | None
     survey_inputs: PlannerSurveyInput | None
+    survey_extension: SurveyExtensionSummary | None
+    questionnaire_follow_up: QuestionnaireFollowUpRecommendation | None
     downstream_guidance: PlannerDownstreamGuidance | None
     confirmed_scope: PlannerScopeSnapshot | None
     inferred_scope: PlannerScopeSnapshot | None
@@ -94,6 +108,7 @@ class WorkflowState(TypedDict, total=False):
     planner_notes: list[str]
     planner_confidence: float | None
     dimension_results: list[DimensionResult]
+    capability_map: CapabilityMap | None
     swot_analysis: SwotAnalysis | None
     survey_evidence: list[SurveyEvidence]
     chunks: list[Chunk]
@@ -107,4 +122,9 @@ class WorkflowState(TypedDict, total=False):
     errors: list[str]
     node_sequence: list[str]
     conditional_routes_taken: list[ConditionalRoute]
+    run_isolation_strategy: str
+    run_cleanup_summary: dict[str, Any]
+    workflow_summary_core: WorkflowSummaryCorePayload | None
+    workflow_summary_extensions: WorkflowSummaryExtensionPayload | None
+    workflow_summary_diagnostics: WorkflowSummaryDiagnosticsPayload | None
     workflow_summary: dict[str, Any]

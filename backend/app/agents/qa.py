@@ -686,6 +686,13 @@ class QaAgent:
         objects = [analysis.product_profile, analysis.feature_tree, analysis.pricing_model, analysis.user_persona]
         if any(not getattr(item, "evidence_ids", []) for item in objects):
             suggestions.append("Some structured analysis fields are missing evidence_ids.")
+        capability_buckets = [
+            bucket
+            for buckets in analysis.capability_map.competitor_capabilities.values()
+            for bucket in buckets
+        ] if getattr(analysis, "capability_map", None) else []
+        if capability_buckets and any(not bucket.evidence_ids and not bucket.insufficient_evidence for bucket in capability_buckets):
+            suggestions.append("Some capability buckets are missing evidence_ids and should stay evidence-bound.")
         if "Evidence is insufficient" in analysis.product_profile.positioning:
             suggestions.append("结构化分析证据不足，建议补充更多来源。")
         if not analysis.feature_tree.core_features or not analysis.pricing_model.tiers or not analysis.user_persona.goals:

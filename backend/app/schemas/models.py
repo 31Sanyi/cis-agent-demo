@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import datetime
 from typing import Any, Literal
 from uuid import uuid4
@@ -106,6 +108,7 @@ class ProductProfile(BaseModel):
     strengths: list[str]
     weaknesses: list[str]
     evidence_ids: list[str] = Field(min_length=1)
+    extensions: "ProductProfileExtensions" = Field(default_factory=lambda: ProductProfileExtensions())
     custom_dimensions: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -113,6 +116,36 @@ class FeatureTree(BaseModel):
     core_features: dict[str, list[str]]
     differentiators: list[str]
     evidence_ids: list[str] = Field(min_length=1)
+
+
+class CapabilitySignal(BaseModel):
+    competitor: str | None = None
+    capability_area: str = Field(min_length=1)
+    normalized_feature: str = Field(min_length=1)
+    evidence_ids: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0, le=1)
+    insufficient_evidence: bool = False
+    matched_keywords: list[str] = Field(default_factory=list)
+    support_summary: str = ""
+
+
+class CapabilityBucket(BaseModel):
+    competitor: str | None = None
+    capability_area: str = Field(min_length=1)
+    normalized_features: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0, le=1)
+    insufficient_evidence: bool = False
+    summary: str = ""
+    signals: list[CapabilitySignal] = Field(default_factory=list)
+
+
+class CapabilityMap(BaseModel):
+    domain_pack: "DomainPackReference" = None
+    competitor_capabilities: dict[str, list[CapabilityBucket]] = Field(default_factory=dict)
+    aggregate_capabilities: list[CapabilityBucket] = Field(default_factory=list)
+    unmapped_signals: list[CapabilitySignal] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
 
 
 class PricingModel(BaseModel):
@@ -213,6 +246,21 @@ class PlannerExtractedContext(BaseModel):
     confidence: float = Field(default=0.0, ge=0, le=1)
 
 
+class DomainPackReference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    domain_pack_id: str = Field(min_length=1)
+    display_name: str = Field(min_length=1)
+    category_key: str | None = None
+    source: str = "resolver"
+    industry_label: str | None = None
+    supported_dimensions: list[str] = Field(default_factory=list)
+    feature_taxonomy_keys: list[str] = Field(default_factory=list)
+    source_preferences: list[str] = Field(default_factory=list)
+    survey_theme_hints: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class PlannerSurveyInput(BaseModel):
     objective: str | None = None
     respondent_type: str | None = None
@@ -256,6 +304,150 @@ class PlannerScopeSnapshot(BaseModel):
     selected_dimensions: list[str] = Field(default_factory=list)
     requested_outputs: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProductProfileExtensions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    domain: "ProductProfileDomainExtension" = Field(default_factory=lambda: ProductProfileDomainExtension())
+    workflow: "ProductProfileWorkflowExtension" = Field(default_factory=lambda: ProductProfileWorkflowExtension())
+
+
+class ProductProfileDomainExtension(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    region: str | None = None
+    industry: str | None = None
+    domain_pack: DomainPackReference | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProductProfileWorkflowExtension(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    analyst_mode: str | None = None
+    selected_dimensions: list[str] = Field(default_factory=list)
+    insufficient_evidence: bool | None = None
+    supporting_evidence_ids: list[str] = Field(default_factory=list)
+    competitor_analysis: dict[str, Any] = Field(default_factory=dict)
+    capability_map: dict[str, Any] | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlannerCoreSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    intent_classification: str | None = None
+    selected_dimensions: list[str] = Field(default_factory=list)
+    writer_guidance: list[str] = Field(default_factory=list)
+    domain_pack: DomainPackReference | None = None
+
+
+class SurveyExtensionSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    survey_needed: bool = False
+    survey_recommended: bool = False
+    survey_objective: str | None = None
+    survey_inputs: dict[str, Any] | None = None
+    survey_guidance: list[str] = Field(default_factory=list)
+
+
+class QuestionnaireFollowUpRecommendation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    recommendation_type: str = "questionnaire_follow_up"
+    launch_mode: str = "follow_up_sidecar"
+    recommended: bool = False
+    required: bool = False
+    objective: str | None = None
+    respondent_type: str | None = None
+    question_themes: list[str] = Field(default_factory=list)
+    hypotheses: list[str] = Field(default_factory=list)
+    guidance: list[str] = Field(default_factory=list)
+    selected_dimensions: list[str] = Field(default_factory=list)
+    domain_pack: DomainPackReference | None = None
+    rationale: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReportCorePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    knowledge: dict[str, Any] = Field(default_factory=dict)
+    swot: dict[str, Any] | None = None
+    claims: list[dict[str, Any]] = Field(default_factory=list)
+    competitor_coverage: dict[str, Any] = Field(default_factory=dict)
+    planner: PlannerCoreSummary | None = None
+
+
+class ReportExtensionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    survey: SurveyExtensionSummary | None = None
+    questionnaire_follow_up: QuestionnaireFollowUpRecommendation | None = None
+    domain: ProductProfileDomainExtension = Field(default_factory=lambda: ProductProfileDomainExtension())
+    workflow: ProductProfileWorkflowExtension = Field(default_factory=lambda: ProductProfileWorkflowExtension())
+
+
+class ReportDiagnosticsPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    writer_mode: str | None = None
+    llm_fallback_reason: str | None = None
+    writer_diagnostics: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkflowSummaryCorePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str | None = None
+    task_id: str | None = None
+    workflow_engine_requested: str | None = None
+    workflow_engine_used: str | None = None
+    workflow_role: str | None = None
+    intent_classification: str | None = None
+    ambiguity_level: str | None = None
+    scope_type: str | None = None
+    scope_size: str | None = None
+    selected_dimensions: list[str] = Field(default_factory=list)
+    downstream_guidance: dict[str, Any] | None = None
+    confirmed_scope: dict[str, Any] | None = None
+    inferred_scope: dict[str, Any] | None = None
+    suggested_scope: dict[str, Any] | None = None
+    recommended_next_constraints: list[str] = Field(default_factory=list)
+    clarification_targets: list[str] = Field(default_factory=list)
+    candidate_competitors: list[dict[str, Any]] = Field(default_factory=list)
+    planning_stages: list[dict[str, Any]] = Field(default_factory=list)
+    domain_pack: DomainPackReference | None = None
+    swot_analysis: dict[str, Any] | None = None
+    rework_context: dict[str, Any] | None = None
+    node_sequence: list[str] = Field(default_factory=list)
+    conditional_routes_taken: list[dict[str, Any]] = Field(default_factory=list)
+    rework_count: int = 0
+    final_status: str | None = None
+    elapsed_time_ms: int | None = None
+
+
+class WorkflowSummaryExtensionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    primary_workflow_kind: str | None = None
+    follow_up_workflow_kind: str | None = None
+    survey: SurveyExtensionSummary | None = None
+    questionnaire_follow_up: QuestionnaireFollowUpRecommendation | None = None
+
+
+class WorkflowSummaryDiagnosticsPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_data_source: str | None = None
+    runner_capability_notes: list[str] = Field(default_factory=list)
+    evidence_gate_output: dict[str, Any] = Field(default_factory=dict)
+    page_fetch_output: dict[str, Any] = Field(default_factory=dict)
+    run_isolation_strategy: str | None = None
+    run_cleanup_summary: dict[str, Any] = Field(default_factory=dict)
+    error_message: str | None = None
 
 
 class DimensionResult(BaseModel):
@@ -446,3 +638,10 @@ class AgentRunResult(BaseModel):
     output: dict[str, Any]
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+ProductProfile.model_rebuild()
+ProductProfileExtensions.model_rebuild()
+CapabilityMap.model_rebuild()
+ReportExtensionPayload.model_rebuild()
+WorkflowSummaryCorePayload.model_rebuild()

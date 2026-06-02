@@ -1,6 +1,7 @@
 import { FileText } from "lucide-react";
 import { useState } from "react";
 import type { Claim, Evidence, Report } from "../types";
+import { reportContractSource } from "../lib/contractSelectors";
 import { categoryLabel } from "../types";
 import { EvidencePanel } from "./EvidencePanel";
 
@@ -21,6 +22,13 @@ export function ReportView({
 }) {
   const [showJson, setShowJson] = useState(false);
   if (!report) return null;
+  const core = report.json_report.core;
+  const extensions = report.json_report.extensions;
+  const planner = core?.planner ?? report.json_report.planner;
+  const survey = extensions?.survey;
+  const questionnaireFollowUp = extensions?.questionnaire_follow_up;
+  const domainPack = planner?.domain_pack ?? extensions?.domain?.domain_pack;
+  const reportContract = reportContractSource(report);
 
   const coverage = (competitors ?? Array.from(new Set([...evidence.map((item) => item.competitor).filter(Boolean), ...report.claims.map((item) => item.competitor).filter(Boolean)])) as string[])
     .map((competitor) => ({
@@ -47,17 +55,32 @@ export function ReportView({
       </div>
 
       <div className="space-y-3">
-        {report.json_report.planner && (
+        {planner && (
           <section className="rounded border border-line bg-white p-4">
             <h3 className="mb-3 text-sm font-semibold">Planner Framing</h3>
             <div className="space-y-2 text-sm">
-              <div>intent: {report.json_report.planner.intent_classification ?? "-"}</div>
-              <div>dimensions: {(report.json_report.planner.selected_dimensions ?? []).join(", ") || "-"}</div>
-              {!!report.json_report.planner.writer_guidance?.length && (
+              <div>intent: {planner.intent_classification ?? "-"}</div>
+              <div>dimensions: {(planner.selected_dimensions ?? []).join(", ") || "-"}</div>
+              <div>contract: {reportContract}</div>
+              <div>domain pack: {domainPack?.display_name ?? "-"}</div>
+              {!!planner.writer_guidance?.length && (
                 <div className="rounded border border-line bg-panel p-3 text-xs leading-5">
-                  {report.json_report.planner.writer_guidance.slice(0, 4).map((item) => (
+                  {planner.writer_guidance.slice(0, 4).map((item) => (
                     <div key={item}>- {item}</div>
                   ))}
+                </div>
+              )}
+              {survey && (
+                <div className="rounded border border-line bg-panel p-3 text-xs leading-5">
+                  <div>survey recommended: {survey.survey_recommended ? "yes" : "no"}</div>
+                  <div>survey objective: {survey.survey_objective ?? "-"}</div>
+                </div>
+              )}
+              {questionnaireFollowUp && (
+                <div className="rounded border border-line bg-panel p-3 text-xs leading-5">
+                  <div>questionnaire launch: {questionnaireFollowUp.launch_mode ?? "follow_up_sidecar"}</div>
+                  <div>required: {questionnaireFollowUp.required ? "yes" : "no"}</div>
+                  <div>respondents: {questionnaireFollowUp.respondent_type ?? "-"}</div>
                 </div>
               )}
             </div>

@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import { SurveyPanel } from "../components/survey/SurveyPanel";
 import { TaskList } from "../components/TaskList";
-import type { Report, SurveyPlannerContext, Task, TaskRun } from "../types";
+import type { QuestionnaireFollowUpRecommendation, Report, SurveyPlannerContext, Task, TaskRun } from "../types";
 import { Pill } from "../types";
 
 export function SurveyWorkspacePage() {
@@ -12,6 +12,7 @@ export function SurveyWorkspacePage() {
   const [runs, setRuns] = useState<TaskRun[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string>();
   const [report, setReport] = useState<Report>();
+  const [surveyContext, setSurveyContext] = useState<SurveyPlannerContext>();
   const [plannerContext, setPlannerContext] = useState<SurveyPlannerContext["planner_context"]>();
   const [busy, setBusy] = useState(false);
 
@@ -37,8 +38,14 @@ export function SurveyWorkspacePage() {
     setTask(nextTask);
     setReport(undefined);
     await api.surveyPlannerContext(nextTask.task_id)
-      .then((context) => setPlannerContext(context.planner_context))
-      .catch(() => setPlannerContext(undefined));
+      .then((context) => {
+        setSurveyContext(context);
+        setPlannerContext(context.planner_context);
+      })
+      .catch(() => {
+        setSurveyContext(undefined);
+        setPlannerContext(undefined);
+      });
     const nextRuns = await api.runs(nextTask.task_id).catch(() => []);
     setRuns(nextRuns);
     const nextRunId = nextRuns[0]?.run_id;
@@ -65,7 +72,7 @@ export function SurveyWorkspacePage() {
           <div>
             <h2 className="text-lg font-semibold">问卷分析工作台</h2>
             <p className="mt-1 text-sm text-slate-600">
-              独立处理问卷生成、CSV 上传和用户反馈分析；不参与主竞品分析 DAG，也不会改写报告、QA 或 Trace。
+              Follow-up sidecar workflow for questionnaire generation, CSV upload, and survey feedback analysis. It does not run as an always-on node in the primary competitive-analysis DAG, and it does not automatically rewrite the main report or QA result.
             </p>
           </div>
           <button
@@ -131,6 +138,14 @@ export function SurveyWorkspacePage() {
             </div>
             <Pill value={plannerContext.survey_needed || plannerContext.survey_recommended ? "passed" : "pending"} />
           </div>
+          {surveyContext?.launch_contract?.recommendation && (
+            <div className="mt-3 rounded border border-line bg-panel p-3 text-xs leading-5 text-slate-700">
+              <div>launch mode: {surveyContext.launch_contract.launch_mode ?? "follow_up_sidecar"}</div>
+              <div>recommendation: {formatRecommendation(surveyContext.launch_contract.recommendation)}</div>
+              <div>contract source: {String(surveyContext.launch_contract.diagnostics?.source ?? plannerContext.diagnostics?.source ?? "-")}</div>
+              <div>load path: {readStringList(surveyContext.launch_contract.diagnostics?.load_path).join(" -> ") || "-"}</div>
+            </div>
+          )}
           <div className="mt-3 grid gap-2 text-sm text-slate-700">
             <div><span className="font-semibold">Objective：</span>{plannerContext.survey_inputs.objective ?? plannerContext.survey_objective ?? "暂无明确目标"}</div>
             <div><span className="font-semibold">Respondent type：</span>{plannerContext.survey_inputs.respondent_type ?? "暂无明确受访者"}</div>
@@ -150,4 +165,10 @@ export function SurveyWorkspacePage() {
 
 function readStringList(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
+}
+
+function formatRecommendation(recommendation: QuestionnaireFollowUpRecommendation): string {
+  if (recommendation.required) return "required follow-up";
+  if (recommendation.recommended) return "recommended follow-up";
+  return "optional";
 }

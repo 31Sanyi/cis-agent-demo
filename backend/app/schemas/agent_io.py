@@ -1,16 +1,21 @@
+from __future__ import annotations
+
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from app.schemas.models import (
     AnalysisDimensionPlan,
+    CapabilityMap,
     Dag,
+    DomainPackReference,
     Evidence,
     FeatureTree,
     PlannerAmbiguityLevel,
     PlannerCompetitorCandidate,
     PlannerDownstreamGuidance,
     PlannerExtractedContext,
+    QuestionnaireFollowUpRecommendation,
     PlannerScopeSnapshot,
     PlannerScopeSize,
     PlannerScopeType,
@@ -45,12 +50,14 @@ class PlannerOutput(BaseModel):
     scope_type: PlannerScopeType = "specific_product_benchmark"
     scope_size: PlannerScopeSize = "narrow"
     extracted_context: PlannerExtractedContext | None = None
+    domain_pack: DomainPackReference | None = None
     selected_dimensions: list[str] = Field(default_factory=list)
     analysis_dimension_plan: AnalysisDimensionPlan | None = None
     survey_needed: bool = False
     survey_recommended: bool = False
     survey_objective: str | None = None
     survey_inputs: PlannerSurveyInput | None = None
+    questionnaire_follow_up: QuestionnaireFollowUpRecommendation | None = None
     confirmed_scope: PlannerScopeSnapshot | None = None
     inferred_scope: PlannerScopeSnapshot | None = None
     suggested_scope: PlannerScopeSnapshot | None = None
@@ -94,6 +101,7 @@ class AnalystInput(BaseModel):
 class AnalystOutput(BaseModel):
     product_profile: ProductProfile
     feature_tree: FeatureTree
+    capability_map: CapabilityMap
     pricing_model: PricingModel
     user_persona: UserPersona
     swot: SwotAnalysis
@@ -116,6 +124,7 @@ class ReportWriterInput(BaseModel):
     survey_recommended: bool = False
     survey_objective: str | None = None
     survey_inputs: PlannerSurveyInput | None = None
+    questionnaire_follow_up: QuestionnaireFollowUpRecommendation | None = None
 
 
 class ReportWriterOutput(BaseModel):

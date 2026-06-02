@@ -17,15 +17,25 @@ const schemaByAgent: Record<string, { input: string; output: string }> = {
 const orderedAgents = ["PlannerAgent", "CollectorAgent", "EvidenceGate", "PageFetcher", "AnalystAgent", "ReportWriterAgent", "QaAgent", "FinalReport"];
 
 export function DagView({ dag, traces, qaRouteTo }: { dag?: Dag; traces: TraceRecord[]; qaRouteTo?: string }) {
-  const nodes = orderedAgents.map((agent) => dag?.nodes.find((node) => node.id === agent) ?? {
-    id: agent,
-    label: agent,
-    status: "pending"
-  });
+  const nodes = dag?.nodes?.length
+    ? dag.nodes
+    : orderedAgents.map((agent) => ({
+        id: agent,
+        label: agent,
+        status: "pending"
+      }));
+  const dagNotes = ((dag as Dag & { metadata?: { notes?: string[] } })?.metadata?.notes ?? []);
 
   return (
     <section className="bg-white p-4">
       <h2 className="mb-4 flex items-center gap-2 text-lg font-semibold"><Activity size={18} /> DAG 执行状态</h2>
+      {dagNotes.length > 0 && (
+        <div className="mb-4 rounded border border-line bg-panel p-3 text-sm text-slate-700">
+          {dagNotes.map((note) => (
+            <div key={note}>- {note}</div>
+          ))}
+        </div>
+      )}
       <div className="grid gap-3 lg:grid-cols-8">
         {nodes.map((node, index) => {
           const agentTraces = traces.filter((trace) => trace.agent_name === node.id);

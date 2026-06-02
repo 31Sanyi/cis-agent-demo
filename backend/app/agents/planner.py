@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.agents.base import run_with_trace
+from app.domain import domain_pack_reference, resolve_domain_pack
 from app.schemas import (
     AnalysisDimension,
     AnalysisDimensionPlan,
@@ -20,6 +21,7 @@ from app.schemas import (
     PlannerScopeSnapshot,
     PlannerStage,
     PlannerSurveyInput,
+    QuestionnaireFollowUpRecommendation,
     Task,
 )
 from app.services.llm_client import LlmClient, parse_llm_json
@@ -164,6 +166,8 @@ class PlannerAgent:
             planning_profile=planning_profile,
         )
         scope_snapshots = self._build_scope_snapshots(task, extracted, selected_dimensions, planning_profile["candidate_competitors"])
+        resolved_domain_pack = self._resolved_domain_pack(task, extracted)
+        domain_pack = self._domain_pack_reference(task, extracted, planning_profile["scope_type"])
         planner_notes = self._normalize_string_list(payload.get("planner_notes"))
         planner_notes.append("Planner used LLM-enhanced intent extraction and deterministic plan normalization.")
         planner_notes.append("Planner keeps confirmed user scope separate from inferred and suggested scope metadata.")
@@ -179,7 +183,18 @@ class PlannerAgent:
                 "scope_type": planning_profile["scope_type"],
                 "scope_size": planning_profile["scope_size"],
                 "candidate_competitor_count": len(planning_profile["candidate_competitors"]),
+                "domain_pack_id": resolved_domain_pack.domain_pack_id,
+                "domain_pack_category_key": resolved_domain_pack.category_key,
             }
+        )
+        questionnaire_follow_up = self._build_questionnaire_follow_up(
+            extracted=extracted,
+            selected_dimensions=selected_dimensions,
+            survey_needed=survey_needed,
+            survey_recommended=survey_recommended,
+            survey_inputs=survey_inputs,
+            domain_pack=domain_pack,
+            downstream_guidance=downstream_guidance,
         )
         return PlannerOutput(
             dag=self._default_dag(),
@@ -193,12 +208,14 @@ class PlannerAgent:
             scope_type=planning_profile["scope_type"],
             scope_size=planning_profile["scope_size"],
             extracted_context=extracted,
+            domain_pack=domain_pack,
             selected_dimensions=selected_dimensions,
             analysis_dimension_plan=analysis_dimension_plan,
             survey_needed=survey_needed,
             survey_recommended=survey_recommended,
             survey_objective=survey_inputs.objective if survey_inputs else None,
             survey_inputs=survey_inputs,
+            questionnaire_follow_up=questionnaire_follow_up,
             confirmed_scope=scope_snapshots["confirmed_scope"],
             inferred_scope=scope_snapshots["inferred_scope"],
             suggested_scope=scope_snapshots["suggested_scope"],
@@ -269,6 +286,8 @@ class PlannerAgent:
             planning_profile=planning_profile,
         )
         scope_snapshots = self._build_scope_snapshots(task, extracted, selected_dimensions, planning_profile["candidate_competitors"])
+        resolved_domain_pack = self._resolved_domain_pack(task, extracted)
+        domain_pack = self._domain_pack_reference(task, extracted, planning_profile["scope_type"])
         missing_information = self._build_missing_information(task, extracted, planning_profile, None)
         extracted = extracted.model_copy(update={"missing_information": missing_information})
         diagnostics.update(
@@ -281,7 +300,18 @@ class PlannerAgent:
                 "scope_type": planning_profile["scope_type"],
                 "scope_size": planning_profile["scope_size"],
                 "candidate_competitor_count": len(planning_profile["candidate_competitors"]),
+                "domain_pack_id": resolved_domain_pack.domain_pack_id,
+                "domain_pack_category_key": resolved_domain_pack.category_key,
             }
+        )
+        questionnaire_follow_up = self._build_questionnaire_follow_up(
+            extracted=extracted,
+            selected_dimensions=selected_dimensions,
+            survey_needed=survey_needed,
+            survey_recommended=survey_recommended,
+            survey_inputs=survey_inputs,
+            domain_pack=domain_pack,
+            downstream_guidance=downstream_guidance,
         )
         return PlannerOutput(
             dag=self._default_dag(),
@@ -292,12 +322,14 @@ class PlannerAgent:
             scope_type=planning_profile["scope_type"],
             scope_size=planning_profile["scope_size"],
             extracted_context=extracted,
+            domain_pack=domain_pack,
             selected_dimensions=selected_dimensions,
             analysis_dimension_plan=analysis_dimension_plan,
             survey_needed=survey_needed,
             survey_recommended=survey_recommended,
             survey_objective=survey_inputs.objective if survey_inputs else None,
             survey_inputs=survey_inputs,
+            questionnaire_follow_up=questionnaire_follow_up,
             confirmed_scope=scope_snapshots["confirmed_scope"],
             inferred_scope=scope_snapshots["inferred_scope"],
             suggested_scope=scope_snapshots["suggested_scope"],
@@ -311,6 +343,34 @@ class PlannerAgent:
             confidence=0.35,
             downstream_guidance=downstream_guidance,
             diagnostics=diagnostics,
+        )
+
+    @staticmethod
+    def _build_questionnaire_follow_up(
+        *,
+        extracted: PlannerExtractedContext,
+        selected_dimensions: list[str],
+        survey_needed: bool,
+        survey_recommended: bool,
+        survey_inputs: PlannerSurveyInput | None,
+        domain_pack,
+        downstream_guidance: PlannerDownstreamGuidance | None,
+    ) -> QuestionnaireFollowUpRecommendation:
+        return QuestionnaireFollowUpRecommendation(
+            recommended=survey_recommended,
+            required=survey_needed,
+            objective=survey_inputs.objective if survey_inputs else None,
+            respondent_type=survey_inputs.respondent_type if survey_inputs else None,
+            question_themes=list(survey_inputs.question_themes) if survey_inputs else [],
+            hypotheses=list(survey_inputs.hypotheses) if survey_inputs else [],
+            guidance=list(downstream_guidance.survey) if downstream_guidance else [],
+            selected_dimensions=list(selected_dimensions),
+            domain_pack=domain_pack,
+            rationale=extracted.survey_reason,
+            metadata={
+                "intent_classification": extracted.intent_classification,
+                "requested_outputs": list(extracted.requested_outputs),
+            },
         )
 
     def _base_diagnostics(self) -> dict[str, Any]:
@@ -410,7 +470,8 @@ class PlannerAgent:
         planning_profile: dict[str, Any],
     ) -> AnalysisDimensionPlan:
         dimension_plans: list[AnalysisDimension] = []
-        category_key = self._category_key(task, extracted)
+        resolved_domain_pack = self._resolved_domain_pack(task, extracted)
+        category_key = resolved_domain_pack.category_key or self._category_key(task, extracted)
         industry_label = self._effective_industry(task, extracted)
         for priority, dimension in enumerate(selected_dimensions, start=1):
             keywords = self._dimension_keywords(task, extracted, dimension, category_key=category_key)
@@ -457,6 +518,7 @@ class PlannerAgent:
                 "ambiguity_level": planning_profile["ambiguity_level"],
                 "scope_type": planning_profile["scope_type"],
                 "scope_size": planning_profile["scope_size"],
+                "domain_pack_id": resolved_domain_pack.domain_pack_id,
                 "clarification_targets": planning_profile["clarification_targets"],
                 "planning_stage_ids": [stage.stage_id for stage in planning_profile["planning_stages"]],
                 "candidate_competitors": [candidate.name for candidate in planning_profile["candidate_competitors"]],
@@ -719,8 +781,9 @@ class PlannerAgent:
         if len(valid_competitors) >= 2 and scope_type in {"specific_product_benchmark", "semi_specific_benchmark", "mixed_intent"}:
             return candidates[:6]
 
-        category_key = self._category_key(task, extracted)
-        inferred = self.CATEGORY_COMPETITOR_CANDIDATES.get(category_key, [])
+        resolved_domain_pack = self._resolved_domain_pack(task, extracted)
+        category_key = resolved_domain_pack.category_key or self._category_key(task, extracted)
+        inferred = list(resolved_domain_pack.competitor_candidates) or self.CATEGORY_COMPETITOR_CANDIDATES.get(category_key, [])
         start = len(candidates) + 1
         for offset, (name, reason, confidence) in enumerate(inferred, start=start):
             if name.lower() in seen:
@@ -903,18 +966,22 @@ class PlannerAgent:
         if scope_type not in {"category_scan", "broad_competitive_analysis", "strategic_ambiguous", "semi_specific_benchmark"}:
             return []
         category = self._effective_industry(task, extracted) or task.product_name
-        category_key = self._category_key(task, extracted)
+        resolved_domain_pack = self._resolved_domain_pack(task, extracted)
+        category_key = resolved_domain_pack.category_key or self._category_key(task, extracted)
         hints = [
+            template.format(category=category)
+            for template in resolved_domain_pack.category_query_templates
+        ] or [
             f"{category} benchmark competitors official pricing features",
             f"{category} buyer reviews feature comparison",
         ]
-        if category_key == "smartphone":
+        if not resolved_domain_pack.category_query_templates and category_key == "smartphone":
             hints.append(f"{category} battery camera charging performance reviews")
-        elif category_key == "crm":
+        elif not resolved_domain_pack.category_query_templates and category_key == "crm":
             hints.append(f"{category} workflow automation pipeline integrations pricing")
-        elif category_key == "ai_note_taking":
+        elif not resolved_domain_pack.category_query_templates and category_key == "ai_note_taking":
             hints.append(f"{category} ai notes meeting capture search workflow reviews")
-        else:
+        elif not resolved_domain_pack.category_query_templates:
             hints.append(f"{category} target users positioning use cases")
         if "ux" in selected_dimensions:
             hints.append(f"{category} usability reviews pain points")
@@ -1373,7 +1440,11 @@ class PlannerAgent:
         scope_type: str,
     ) -> list[str]:
         industry_label = self._effective_industry(task, extracted)
+        resolved_domain_pack = self._resolved_domain_pack(task, extracted)
         hints = [
+            template.format(competitor=competitor, industry=industry_label)
+            for template in resolved_domain_pack.competitor_query_templates
+        ] or [
             f"{competitor} official {industry_label}",
             f"{competitor} pricing official",
             f"{competitor} features documentation",
@@ -1590,6 +1661,10 @@ class PlannerAgent:
         *,
         category_key: str | None,
     ) -> list[str]:
+        resolved_domain_pack = self._resolved_domain_pack(task, extracted)
+        pack_keywords = resolved_domain_pack.dimension_keywords.get(dimension)
+        if pack_keywords:
+            return [dimension, *list(pack_keywords)]
         if category_key == "smartphone":
             smartphone = {
                 "positioning": [dimension, "flagship positioning", "premium segment", "brand differentiation"],
@@ -1645,6 +1720,22 @@ class PlannerAgent:
             "market": [dimension, "market", "buyer trends", "category signals"],
         }
         return defaults.get(dimension, [dimension])
+
+    def _resolved_domain_pack(self, task: Task, extracted: PlannerExtractedContext):
+        return resolve_domain_pack(task, extracted)
+
+    def _domain_pack_reference(
+        self,
+        task: Task,
+        extracted: PlannerExtractedContext,
+        scope_type: str,
+    ):
+        pack = self._resolved_domain_pack(task, extracted)
+        return domain_pack_reference(
+            pack,
+            industry_label=self._effective_industry(task, extracted),
+            metadata={"scope_type": scope_type},
+        )
 
     def _build_scope_snapshots(
         self,

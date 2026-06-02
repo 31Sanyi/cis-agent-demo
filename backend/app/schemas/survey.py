@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import datetime
 from typing import Any, Literal
 from uuid import uuid4
@@ -60,6 +62,41 @@ class SurveyQuestion(BaseModel):
         return self
 
 
+class SurveyContextExtensions(BaseModel):
+    planner_snapshot: dict[str, Any] = Field(default_factory=dict)
+    report_context_snapshot: dict[str, Any] = Field(default_factory=dict)
+
+
+class QuestionnaireLaunchRecommendation(BaseModel):
+    recommendation_type: str = "questionnaire_follow_up"
+    launch_mode: str = "follow_up_sidecar"
+    recommended: bool = False
+    required: bool = False
+    objective: str | None = None
+    respondent_type: str | None = None
+    question_themes: list[str] = Field(default_factory=list)
+    hypotheses: list[str] = Field(default_factory=list)
+    guidance: list[str] = Field(default_factory=list)
+    selected_dimensions: list[str] = Field(default_factory=list)
+    rationale: str | None = None
+    domain_pack: dict[str, Any] | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class QuestionnaireLaunchContract(BaseModel):
+    task_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    launch_mode: str = "follow_up_sidecar"
+    recommendation: QuestionnaireLaunchRecommendation = Field(default_factory=QuestionnaireLaunchRecommendation)
+    planner_context: dict[str, Any] = Field(default_factory=dict)
+    report_context: dict[str, Any] = Field(default_factory=dict)
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+
+
+class SurveyExtensions(BaseModel):
+    context: SurveyContextExtensions = Field(default_factory=SurveyContextExtensions)
+
+
 class Survey(BaseModel):
     survey_id: str = Field(default_factory=lambda: f"survey_{uuid4().hex[:10]}")
     task_id: str = Field(min_length=1)
@@ -74,6 +111,7 @@ class Survey(BaseModel):
     pain_points: list[SurveyPainPoint] = Field(default_factory=list)
     questions: list[SurveyQuestion] = Field(default_factory=list)
     question_pain_mapping: dict[str, str] = Field(default_factory=dict)
+    extensions: SurveyExtensions = Field(default_factory=SurveyExtensions)
     planner_snapshot: dict[str, Any] = Field(default_factory=dict)
     report_context_snapshot: dict[str, Any] = Field(default_factory=dict)
     expected_analysis_dimensions: list[str] = Field(default_factory=list)
@@ -97,6 +135,14 @@ class Survey(BaseModel):
             for question in self.questions
             if question.maps_to_pain_id
         }
+        if not self.planner_snapshot and self.extensions.context.planner_snapshot:
+            self.planner_snapshot = dict(self.extensions.context.planner_snapshot)
+        if not self.report_context_snapshot and self.extensions.context.report_context_snapshot:
+            self.report_context_snapshot = dict(self.extensions.context.report_context_snapshot)
+        self.extensions.context = SurveyContextExtensions(
+            planner_snapshot=dict(self.planner_snapshot),
+            report_context_snapshot=dict(self.report_context_snapshot),
+        )
         return self
 
 

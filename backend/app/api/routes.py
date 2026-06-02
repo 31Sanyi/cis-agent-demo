@@ -108,20 +108,69 @@ def run_task(
         result["workflow_summary"] = {
             "workflow_engine_requested": workflow_engine or "env/default",
             "workflow_engine_used": "custom",
+            "workflow_role": "legacy_fallback",
+            "primary_workflow_kind": "competitive_analysis_langgraph",
+            "follow_up_workflow_kind": "survey_questionnaire_sidecar",
+            "survey_integration_mode": "follow_up_sidecar",
+            "workflow_data_source": "execution_backed_summary",
+            "runner_capability_notes": [
+                "Custom Runner is a limited legacy fallback path.",
+                "It executes Planner -> Collector -> Analyst -> ReportWriter -> Qa -> FinalReport.",
+                "Questionnaire and survey work are follow-up sidecar flows, not part of this runner path.",
+            ],
             "intent_classification": result["plan"].intent_classification if result.get("plan") else None,
             "ambiguity_level": result["plan"].ambiguity_level if result.get("plan") else None,
             "scope_type": result["plan"].scope_type if result.get("plan") else None,
             "scope_size": result["plan"].scope_size if result.get("plan") else None,
             "survey_needed": result["plan"].survey_needed if result.get("plan") else False,
+            "survey_recommended": result["plan"].survey_recommended if result.get("plan") else False,
             "selected_dimensions": result["plan"].selected_dimensions if result.get("plan") else [],
             "recommended_next_constraints": result["plan"].recommended_next_constraints if result.get("plan") else [],
             "clarification_targets": result["plan"].clarification_targets if result.get("plan") else [],
             "candidate_competitors": [item.model_dump(mode="json") for item in result["plan"].candidate_competitors] if result.get("plan") else [],
             "planning_stages": [item.model_dump(mode="json") for item in result["plan"].planning_stages] if result.get("plan") else [],
+            "domain_pack": result["plan"].domain_pack.model_dump(mode="json") if result.get("plan") and result["plan"].domain_pack else None,
             "node_sequence": ["planner", "collector", "analyst", "report_writer", "qa"] + (["final_report"] if result.get("report") else []),
             "conditional_routes_taken": [],
             "rework_count": result["qa_result"].rework_count if result.get("qa_result") else 0,
             "final_status": result["qa_result"].status if result.get("qa_result") else "failed",
+        }
+        result["workflow_summary"]["core"] = {
+            "workflow_engine_requested": result["workflow_summary"]["workflow_engine_requested"],
+            "workflow_engine_used": result["workflow_summary"]["workflow_engine_used"],
+            "workflow_role": result["workflow_summary"]["workflow_role"],
+            "intent_classification": result["workflow_summary"]["intent_classification"],
+            "ambiguity_level": result["workflow_summary"]["ambiguity_level"],
+            "scope_type": result["workflow_summary"]["scope_type"],
+            "scope_size": result["workflow_summary"]["scope_size"],
+            "selected_dimensions": result["workflow_summary"]["selected_dimensions"],
+            "recommended_next_constraints": result["workflow_summary"]["recommended_next_constraints"],
+            "clarification_targets": result["workflow_summary"]["clarification_targets"],
+            "candidate_competitors": result["workflow_summary"]["candidate_competitors"],
+            "planning_stages": result["workflow_summary"]["planning_stages"],
+            "domain_pack": result["workflow_summary"]["domain_pack"],
+            "node_sequence": result["workflow_summary"]["node_sequence"],
+            "conditional_routes_taken": result["workflow_summary"]["conditional_routes_taken"],
+            "rework_count": result["workflow_summary"]["rework_count"],
+            "final_status": result["workflow_summary"]["final_status"],
+        }
+        result["workflow_summary"]["extensions"] = {
+            "primary_workflow_kind": result["workflow_summary"]["primary_workflow_kind"],
+            "follow_up_workflow_kind": result["workflow_summary"]["follow_up_workflow_kind"],
+            "survey": {
+                "survey_needed": result["workflow_summary"]["survey_needed"],
+                "survey_recommended": result["workflow_summary"].get("survey_recommended", False),
+                "survey_objective": result["plan"].survey_objective if result.get("plan") else None,
+                "survey_inputs": result["plan"].survey_inputs.model_dump(mode="json") if result.get("plan") and result["plan"].survey_inputs else None,
+                "survey_guidance": result["plan"].downstream_guidance.survey if result.get("plan") and result["plan"].downstream_guidance else [],
+            },
+            "questionnaire_follow_up": result["plan"].questionnaire_follow_up.model_dump(mode="json")
+            if result.get("plan") and result["plan"].questionnaire_follow_up
+            else None,
+        }
+        result["workflow_summary"]["diagnostics"] = {
+            "workflow_data_source": result["workflow_summary"]["workflow_data_source"],
+            "runner_capability_notes": result["workflow_summary"]["runner_capability_notes"],
         }
         final_status = result["workflow_summary"]["final_status"]
         finished_run = run_service.finish_run(
@@ -133,7 +182,7 @@ def run_task(
         result["run"] = finished_run
         result["run_id"] = finished_run.run_id
         result["workflow_summary"]["run_id"] = finished_run.run_id
-        result["workflow_summary"]["run_isolation_strategy"] = "legacy_custom_no_run_binding"
+        result["workflow_summary"]["run_isolation_strategy"] = "task_run_bound_custom_fallback"
         return result
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc

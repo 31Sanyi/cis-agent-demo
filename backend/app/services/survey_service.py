@@ -14,6 +14,8 @@ from app.agents.survey_analysis_agent import SurveyAnalysisAgent
 from app.db_models import SurveyAnalysisRecordRow, SurveyRecordRow, SurveyResponseBatchRecordRow, TaskRecord
 from app.schemas import Evidence, PlannerDownstreamGuidance, PlannerSurveyInput, SurveyEvidence
 from app.schemas.survey import (
+    QuestionnaireLaunchContract,
+    QuestionnaireLaunchRecommendation,
     Survey,
     SurveyAddQuestionRequest,
     SurveyAnalysis,
@@ -84,9 +86,11 @@ class SurveyService:
         task = self.db.get(TaskRecord, task_id)
         if task is None:
             raise KeyError(task_id)
+        launch_contract = self.load_questionnaire_launch_contract(task.task_id)
         return {
             "task": self._task_payload(task),
-            "planner_context": self._real_planner_context(task.task_id) or self._planner_context(task),
+            "planner_context": dict(launch_contract.planner_context),
+            "launch_contract": launch_contract.model_dump(mode="json"),
         }
 
     def generate(self, task_id: str, run_id: str, request: SurveyGenerateRequest) -> Survey:
@@ -110,8 +114,9 @@ class SurveyService:
         if task is None:
             raise KeyError(task_id)
         run_id = self._latest_run_id_or_manual(task_id)
-        planner_context = self._real_planner_context(task_id) or self._planner_context(task)
-        report_context = self._report_context_for_task_run(task_id, run_id)
+        launch_contract = self.load_questionnaire_launch_contract(task_id, run_id=run_id)
+        planner_context = dict(launch_contract.planner_context)
+        report_context = dict(launch_contract.report_context)
         survey_inputs = planner_context.get("survey_inputs") or {}
         survey_needed = bool(planner_context.get("survey_needed"))
         survey_recommended = bool(planner_context.get("survey_recommended", False))
@@ -138,7 +143,9 @@ class SurveyService:
         survey.metadata.update(
             {
                 "source": "planner_output",
+                "launch_contract_source": "questionnaire_follow_up_contract",
                 "planner_context": planner_context,
+                "launch_contract": launch_contract.model_dump(mode="json"),
                 "survey_needed": survey_needed,
                 "survey_recommended": survey_recommended,
                 "survey_objective": planner_context.get("survey_objective"),
@@ -146,6 +153,35 @@ class SurveyService:
             }
         )
         return self.save_survey(survey)
+
+    def load_planner_context_for_survey(self, task_id: str) -> dict[str, Any]:
+        contract = self.load_questionnaire_launch_contract(task_id)
+        planner_context = dict(contract.planner_context)
+        diagnostics = dict(planner_context.get("diagnostics") or {})
+        diagnostics.setdefault("loader", "load_planner_context_for_survey")
+        diagnostics.setdefault("launch_mode", contract.launch_mode)
+        diagnostics.setdefault("load_path", list(contract.diagnostics.get("load_path") or []))
+        planner_context["diagnostics"] = diagnostics
+        return planner_context
+
+    def load_questionnaire_launch_contract(self, task_id: str, run_id: str | None = None) -> QuestionnaireLaunchContract:
+        task = self.db.get(TaskRecord, task_id)
+        if task is None:
+            raise KeyError(task_id)
+        resolved_run_id = run_id or self._latest_run_id_or_manual(task_id)
+        report_context = self._report_context_for_task_run(task_id, resolved_run_id)
+        planner_context, diagnostics = self._planner_context_from_sources(task, resolved_run_id, report_context)
+        recommendation = self._recommendation_from_context(planner_context, report_context)
+        diagnostics.setdefault("loader", "load_questionnaire_launch_contract")
+        diagnostics.setdefault("launch_mode", "follow_up_sidecar")
+        return QuestionnaireLaunchContract(
+            task_id=task_id,
+            run_id=resolved_run_id,
+            recommendation=recommendation,
+            planner_context=planner_context,
+            report_context=report_context,
+            diagnostics=diagnostics,
+        )
 
     def generate_from_topic(self, request: SurveyTopicGenerateRequest) -> Survey:
         context = {
@@ -759,6 +795,20 @@ class SurveyService:
             "survey_recommended": True,
             "survey_objective": survey_inputs.objective,
             "survey_inputs": survey_inputs.model_dump(mode="json"),
+            "questionnaire_follow_up": {
+                "recommendation_type": "questionnaire_follow_up",
+                "launch_mode": "follow_up_sidecar",
+                "recommended": True,
+                "required": True,
+                "objective": survey_inputs.objective,
+                "respondent_type": survey_inputs.respondent_type,
+                "question_themes": list(survey_inputs.question_themes),
+                "hypotheses": list(survey_inputs.hypotheses),
+                "guidance": ["Use the questionnaire as a follow-up validation workflow, not as an always-on main DAG node."],
+                "selected_dimensions": ["positioning", "feature", "pricing", "persona", "risk"],
+                "rationale": "Public evidence alone is insufficient to validate user-side pain points and preferences.",
+                "metadata": {"source": "survey_fallback_planner_context"},
+            },
             "extracted_context": {
                 "product_name": task.product_name,
                 "competitors": competitors,
@@ -776,25 +826,104 @@ class SurveyService:
             "diagnostics": {"source": "survey_fallback_planner_context"},
         }
 
-    def _real_planner_context(self, task_id: str) -> dict[str, Any] | None:
-        run_id = self._latest_run_id_or_manual(task_id)
-        report_context = self._report_context_for_task_run(task_id, run_id)
+    def _planner_context_from_sources(
+        self,
+        task: TaskRecord,
+        run_id: str,
+        report_context: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        explicit_context = self._questionnaire_follow_up_context(task, run_id, report_context)
+        if explicit_context is not None:
+            diagnostics = dict(explicit_context.get("diagnostics") or {})
+            diagnostics.setdefault("source", "questionnaire_follow_up_contract")
+            diagnostics.setdefault("source_section", "report.extensions.questionnaire_follow_up")
+            diagnostics.setdefault("load_path", ["report_extensions.questionnaire_follow_up"])
+            explicit_context["diagnostics"] = diagnostics
+            return explicit_context, diagnostics
+        report_snapshot = self._real_planner_context(task.task_id, run_id=run_id, report_context=report_context)
+        if report_snapshot:
+            diagnostics = dict(report_snapshot.get("diagnostics") or {})
+            diagnostics.setdefault("source", "report_json_planner_snapshot")
+            diagnostics.setdefault("source_section", "report.core.planner+extensions.survey")
+            diagnostics.setdefault("load_path", ["report_core.planner", "report_extensions.survey"])
+            report_snapshot["diagnostics"] = diagnostics
+            return report_snapshot, diagnostics
+        fallback_context = self._planner_context(task)
+        diagnostics = dict(fallback_context.get("diagnostics") or {})
+        diagnostics.setdefault("source", "survey_fallback_planner_context")
+        diagnostics.setdefault("source_section", "task_fallback")
+        diagnostics.setdefault("load_path", ["task_fallback_planner_context"])
+        fallback_context["diagnostics"] = diagnostics
+        return fallback_context, diagnostics
+
+    def _questionnaire_follow_up_context(
+        self,
+        task: TaskRecord,
+        run_id: str,
+        report_context: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        follow_up = report_context.get("questionnaire_follow_up") or {}
+        if not isinstance(follow_up, dict) or not follow_up:
+            return None
+        survey_inputs = {
+            "objective": follow_up.get("objective"),
+            "respondent_type": follow_up.get("respondent_type"),
+            "question_themes": list(follow_up.get("question_themes") or []),
+            "hypotheses": list(follow_up.get("hypotheses") or []),
+            "metadata": {"source": "questionnaire_follow_up_contract"},
+        }
+        return {
+            "intent_classification": (follow_up.get("metadata") or {}).get("intent_classification") or "competitive_analysis",
+            "selected_dimensions": list(follow_up.get("selected_dimensions") or []),
+            "downstream_guidance": {
+                "survey": list(follow_up.get("guidance") or []),
+            },
+            "survey_needed": bool(follow_up.get("required", False)),
+            "survey_recommended": bool(follow_up.get("recommended", False)),
+            "survey_objective": follow_up.get("objective"),
+            "survey_inputs": survey_inputs,
+            "questionnaire_follow_up": follow_up,
+            "missing_information": [],
+            "assumptions": [],
+            "candidate_competitors": [{"name": competitor, "confidence": 0.5} for competitor in json.loads(task.competitors_json)],
+            "diagnostics": {
+                "source_run_id": run_id,
+                "source": "questionnaire_follow_up_contract",
+            },
+        }
+
+    def _real_planner_context(
+        self,
+        task_id: str,
+        *,
+        run_id: str | None = None,
+        report_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        run_id = run_id or self._latest_run_id_or_manual(task_id)
+        report_context = report_context or self._report_context_for_task_run(task_id, run_id)
         planner = report_context.get("planner") or {}
+        survey_extension = report_context.get("survey_extension") or {}
         if not planner:
             return None
-        survey_inputs = planner.get("survey_inputs") or {}
+        survey_inputs = survey_extension.get("survey_inputs") or planner.get("survey_inputs") or {}
         return {
             "intent_classification": planner.get("intent_classification") or "competitive_analysis",
             "selected_dimensions": planner.get("selected_dimensions") or [],
-            "downstream_guidance": {"survey": planner.get("survey_guidance") or [], "writer": planner.get("writer_guidance") or []},
-            "survey_needed": bool(planner.get("survey_needed", False)),
-            "survey_recommended": bool(planner.get("survey_recommended", bool(planner.get("selected_dimensions")))),
-            "survey_objective": planner.get("survey_objective"),
+            "downstream_guidance": {
+                "survey": survey_extension.get("survey_guidance") or planner.get("survey_guidance") or [],
+                "writer": planner.get("writer_guidance") or [],
+            },
+            "survey_needed": bool(survey_extension.get("survey_needed", planner.get("survey_needed", False))),
+            "survey_recommended": bool(
+                survey_extension.get("survey_recommended", planner.get("survey_recommended", bool(planner.get("selected_dimensions"))))
+            ),
+            "survey_objective": survey_extension.get("survey_objective", planner.get("survey_objective")),
             "survey_inputs": survey_inputs if isinstance(survey_inputs, dict) else {},
+            "questionnaire_follow_up": report_context.get("questionnaire_follow_up") or {},
             "missing_information": [],
             "assumptions": [],
             "candidate_competitors": [],
-            "diagnostics": {"source": "report_json_planner_snapshot"},
+            "diagnostics": {"source": "report_json_planner_snapshot", "source_section": "core/extensions", "source_run_id": run_id},
         }
 
     def _context_from_task_and_planner(
@@ -804,6 +933,7 @@ class SurveyService:
         report_context: dict[str, Any],
     ) -> dict[str, Any]:
         survey_inputs = planner_context.get("survey_inputs") or {}
+        questionnaire_follow_up = planner_context.get("questionnaire_follow_up") or report_context.get("questionnaire_follow_up") or {}
         return {
             "product_name": task.product_name,
             "competitors": json.loads(task.competitors_json),
@@ -826,6 +956,7 @@ class SurveyService:
                     "candidate_competitors": planner_context.get("candidate_competitors"),
                     "survey_recommended": planner_context.get("survey_recommended", False),
                     "downstream_guidance": (planner_context.get("downstream_guidance") or {}).get("survey"),
+                    "questionnaire_follow_up": questionnaire_follow_up,
                 },
                 ensure_ascii=False,
             ),
@@ -837,8 +968,30 @@ class SurveyService:
             "assumptions": planner_context.get("assumptions") or [],
             "candidate_competitors": planner_context.get("candidate_competitors") or [],
             "survey_recommended": planner_context.get("survey_recommended", False),
+            "questionnaire_follow_up": questionnaire_follow_up,
             "report_context": report_context,
         }
+
+    def _recommendation_from_context(
+        self,
+        planner_context: dict[str, Any],
+        report_context: dict[str, Any],
+    ) -> QuestionnaireLaunchRecommendation:
+        existing = planner_context.get("questionnaire_follow_up") or report_context.get("questionnaire_follow_up") or {}
+        survey_inputs = planner_context.get("survey_inputs") or {}
+        return QuestionnaireLaunchRecommendation(
+            recommended=bool(existing.get("recommended", planner_context.get("survey_recommended", False))),
+            required=bool(existing.get("required", planner_context.get("survey_needed", False))),
+            objective=existing.get("objective", planner_context.get("survey_objective")),
+            respondent_type=existing.get("respondent_type", survey_inputs.get("respondent_type")),
+            question_themes=list(existing.get("question_themes") or survey_inputs.get("question_themes") or []),
+            hypotheses=list(existing.get("hypotheses") or survey_inputs.get("hypotheses") or []),
+            guidance=list(existing.get("guidance") or (planner_context.get("downstream_guidance") or {}).get("survey") or []),
+            selected_dimensions=list(existing.get("selected_dimensions") or planner_context.get("selected_dimensions") or []),
+            rationale=existing.get("rationale") or ((planner_context.get("diagnostics") or {}).get("source_section")),
+            domain_pack=existing.get("domain_pack") if isinstance(existing.get("domain_pack"), dict) else None,
+            metadata=dict(existing.get("metadata") or {}),
+        )
 
     def _context_from_request(self, task: TaskRecord, request: SurveyGenerateRequest) -> dict[str, Any]:
         return {
@@ -1131,10 +1284,16 @@ class SurveyService:
     def _report_context_for_task_run(self, task_id: str, run_id: str) -> dict[str, Any]:
         try:
             report = ReportService(self.db).get_for_task_run(task_id, run_id)
+            json_report = report.json_report or {}
+            core = dict(json_report.get("core") or {})
+            extensions = dict(json_report.get("extensions") or {})
             return {
                 "report_markdown": report.markdown,
                 "claims_json": [claim.model_dump(mode="json") for claim in report.claims],
-                "planner": dict((report.json_report or {}).get("planner") or {}),
+                "planner": dict(core.get("planner") or json_report.get("planner") or {}),
+                "survey_extension": dict(extensions.get("survey") or {}),
+                "questionnaire_follow_up": dict(extensions.get("questionnaire_follow_up") or {}),
+                "report_extensions": extensions,
             }
         except KeyError:
             return {"report_markdown": "", "claims_json": []}
@@ -1181,6 +1340,12 @@ class SurveyService:
             pain_points=pain_points,
             questions=questions,
             question_pain_mapping=question_pain_mapping,
+            extensions={
+                "context": {
+                    "planner_snapshot": planner_snapshot,
+                    "report_context_snapshot": report_context_snapshot,
+                }
+            },
             planner_snapshot=planner_snapshot,
             report_context_snapshot=report_context_snapshot,
             expected_analysis_dimensions=list(payload.get("expected_analysis_dimensions") or []),
