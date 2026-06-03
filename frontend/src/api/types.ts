@@ -613,11 +613,30 @@ export type SurveyUpdateRequest = {
 };
 
 export type SurveyTopicGenerateRequest = {
-  topic: string;
+  topic?: string;
   target_respondents?: string;
   research_goal?: string;
   requirements?: string;
   question_count?: number;
+  qa_messages?: SurveyBriefMessage[];
+  brief?: SurveyBrief | null;
+};
+
+export type SurveyBriefMessage = {
+  role: "assistant" | "user";
+  content: string;
+};
+
+export type SurveyBrief = {
+  research_topic: string;
+  product_or_category: string;
+  target_respondents: string;
+  research_goal: string;
+  pain_points: string[];
+  competitors?: string[];
+  requirements?: string;
+  question_count: number;
+  metadata?: Record<string, unknown>;
 };
 
 export type SurveyRevisionResponse = {

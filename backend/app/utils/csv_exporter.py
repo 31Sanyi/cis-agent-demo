@@ -5,15 +5,22 @@ from io import StringIO
 from app.schemas.survey import Survey
 
 SURVEY_TEMPLATE_COLUMNS = [
+    "section_id",
+    "section_title",
     "question_id",
-    "field_name",
     "question_text",
     "question_type",
     "options",
     "required",
-    "analysis_goal",
-    "related_claim_id",
 ]
+
+QUESTION_TYPE_LABELS = {
+    "single_choice": "单选题",
+    "multiple_choice": "多选题",
+    "rating": "评分题",
+    "text": "开放题",
+    "number": "数字题",
+}
 
 
 def export_survey_template_csv(survey: Survey) -> str:
@@ -23,14 +30,13 @@ def export_survey_template_csv(survey: Survey) -> str:
     for question in survey.questions:
         writer.writerow(
             {
+                "section_id": "",
+                "section_title": "",
                 "question_id": question.question_id,
-                "field_name": question.field_name,
                 "question_text": question.question_text,
-                "question_type": question.question_type,
+                "question_type": QUESTION_TYPE_LABELS.get(question.question_type, question.question_type),
                 "options": "|".join(question.options),
                 "required": "true" if question.required else "false",
-                "analysis_goal": question.analysis_goal,
-                "related_claim_id": question.related_claim_id or "",
             }
         )
     return output.getvalue()

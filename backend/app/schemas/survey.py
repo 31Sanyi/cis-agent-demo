@@ -67,6 +67,39 @@ class SurveyContextExtensions(BaseModel):
     report_context_snapshot: dict[str, Any] = Field(default_factory=dict)
 
 
+class SurveyBriefMessage(BaseModel):
+    role: Literal["assistant", "user"]
+    content: str = Field(min_length=1)
+
+
+class SurveyBrief(BaseModel):
+    research_topic: str = ""
+    product_or_category: str = ""
+    target_respondents: str = ""
+    research_goal: str = ""
+    pain_points: list[str] = Field(default_factory=list)
+    competitors: list[str] = Field(default_factory=list)
+    requirements: str = ""
+    question_count: int = Field(default=10, ge=1, le=30)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SurveyReviewIssue(BaseModel):
+    severity: Literal["low", "medium", "high"]
+    issue: str = Field(min_length=1)
+    suggestion: str = Field(min_length=1)
+    related_question_id: str | None = None
+    related_pain_id: str | None = None
+
+
+class SurveyReviewResult(BaseModel):
+    passed: bool
+    score: int = Field(ge=0, le=100)
+    issues: list[SurveyReviewIssue] = Field(default_factory=list)
+    rewrite_instruction: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class QuestionnaireLaunchRecommendation(BaseModel):
     recommendation_type: str = "questionnaire_follow_up"
     launch_mode: str = "follow_up_sidecar"
@@ -218,11 +251,13 @@ class SurveyReorderRequest(BaseModel):
 
 
 class SurveyTopicGenerateRequest(BaseModel):
-    topic: str = Field(min_length=1)
+    topic: str = ""
     target_respondents: str = ""
     research_goal: str = ""
     requirements: str = ""
     question_count: int = Field(default=10, ge=1, le=30)
+    qa_messages: list[SurveyBriefMessage] = Field(default_factory=list)
+    brief: SurveyBrief | None = None
 
 
 class SurveyTaskRefineRequest(BaseModel):

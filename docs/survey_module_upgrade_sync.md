@@ -9,6 +9,10 @@
 - 独立的 `Survey / Questionnaire` 工作台
 - `PainPointResearchAgent`，用于从 Planner / Report / Claims 中提取待验证痛点
 - 痛点验证型问卷生成，而不是通用满意度问卷
+- 问答式调研需求收集：`qa_messages -> SurveyBrief -> Survey`
+- 问卷生成后的系统自审与自动返工 metadata
+- 在现有问卷上通过 AI 生成新问题，并保留手动添加空白题
+- 默认导出完整问卷 CSV，答卷模板导出改为独立入口
 - 多格式反馈导入：`csv`、`xlsx`、`json`、`txt`、`md`
 - 反馈分析结果结构化输出：
   - `pain_point_validation`
@@ -72,8 +76,15 @@ http://127.0.0.1:5173
 2. 切到“问卷分析工作台”
 3. 选择同一个任务，查看最新 Run 对应的 `Planner 问卷规划`
 4. 生成问卷，导出反馈模板或示例反馈
+4. 在问卷编辑区使用 `AI 生成新问题` 补充新题，或使用 `手动添加空白题` 人工新增
 5. 上传真实反馈文件或示例反馈文件
 6. 查看 `pain_point_validation`、`claim_validation_matrix` 和 `SurveyEvidence`
+
+### 3.4 当前导出规则
+
+- `导出 CSV`：导出完整问卷，每一行是一道题，面向普通用户阅读
+- `导出答卷模板 CSV`：导出 `respondent_id + field_name` 的填写模板，供后续上传分析
+- `导出示例反馈 CSV`：导出符合当前问卷字段的示例答卷
 
 ## 4. Planner 问卷规划的显示规则
 
