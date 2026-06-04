@@ -51,6 +51,8 @@ def parse_survey_response_csv(content: str, survey: Survey) -> dict[str, Any]:
         "invalid_count": invalid_count,
         "csv_columns": fieldnames,
         "questions": stats_by_question,
+        "response_rows": rows,
+        "required_fields": required_fields,
     }
 
 

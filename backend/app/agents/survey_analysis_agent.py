@@ -4,8 +4,9 @@ from typing import Any
 from app.services.survey_llm_client import SurveyLLMClient
 
 SURVEY_ANALYSIS_SYSTEM_PROMPT = """你是竞品分析系统中的 SurveyAnalysisAgent。
-你的任务不是只做问卷统计摘要，而是根据问卷结构、pain_points、question-to-pain mapping、用户上传反馈统计结果、PlannerAgent 上下文和原竞品分析报告，判断报告中的产品痛点是否被用户侧反馈验证。
-问卷数据不是绝对事实，只能代表当前样本。你必须说明样本量、样本偏差、置信度和不可过度推断的地方。
+你的任务是基于已清洗后的问卷反馈统计结果，判断产品痛点、竞品切换风险、付费意愿和原报告 claims 是否被用户侧样本支持。
+问卷数据只能代表当前上传样本，不能直接代表整体市场。你必须区分强结论、弱信号、不可用数据和需要继续验证的问题。
+如果 data_quality_assessment.can_enter_knowledge_base=false，你必须降低所有 knowledge_candidates 的 should_write_to_kb，并明确 rejection_reason。
 输出必须是合法 JSON。"""
 
 
@@ -36,8 +37,14 @@ def build_survey_analysis_prompt(
 {json.dumps(survey_json.get("pain_points", []), ensure_ascii=False)}
 【question_pain_mapping】
 {json.dumps(survey_json.get("question_pain_mapping", {}), ensure_ascii=False)}
-【问卷反馈统计结果】
+【数据质量评估】
+{json.dumps(survey_stats_json.get("data_quality_assessment", {}), ensure_ascii=False)}
+【清洗后的统计结果】
 {json.dumps(survey_stats_json, ensure_ascii=False)}
+【被剔除样本原因摘要】
+{json.dumps(survey_stats_json.get("excluded_rows_summary", []), ensure_ascii=False)}
+【清洗规则】
+{json.dumps(survey_stats_json.get("cleaning_rules_applied", []), ensure_ascii=False)}
 【样本量】
 {survey_stats_json.get("sample_size", 0)}
 【PlannerAgent 快照】
@@ -60,6 +67,7 @@ def build_survey_analysis_prompt(
 输出格式必须严格为：
 {{
   "executive_summary": "string",
+  "user_facing_summary": "给产品经理看的自然语言总结，150-300字。必须说明样本量、清洗后有效样本、最强痛点、最谨慎的结论和下一步建议。",
   "sample_summary": {{"sample_size": 0, "valid_count": 0, "limitations": ["string"]}},
   "key_findings": [
     {{"finding": "string", "supporting_questions": ["Q1"], "confidence": 0.0, "explanation": "string"}}
@@ -89,5 +97,35 @@ def build_survey_analysis_prompt(
   "recommended_report_revisions": [],
   "limitations": ["string"],
   "next_research_questions": ["string"],
-  "dashboard_summary": "string"
+  "dashboard_summary": "string",
+  "data_quality_assessment": {{
+    "raw_count": 0,
+    "clean_count": 0,
+    "removed_count": 0,
+    "valid_ratio": 0.0,
+    "quality_score": 0.0,
+    "quality_level": "high | medium | low | unusable",
+    "can_enter_knowledge_base": false,
+    "reasons": ["string"],
+    "warnings": ["string"],
+    "excluded_rows_summary": [],
+    "cleaning_rules_applied": ["string"]
+  }},
+  "knowledge_candidates": [
+    {{
+      "title": "string",
+      "content": "string",
+      "evidence_type": "survey_aggregate",
+      "confidence": 0.0,
+      "sample_size": 0,
+      "clean_sample_size": 0,
+      "supporting_questions": ["Q1"],
+      "related_pain_ids": ["P1"],
+      "related_claim_ids": ["claim_1"],
+      "limitations": ["string"],
+      "should_write_to_kb": false,
+      "rejection_reason": "string or null"
+    }}
+  ],
+  "cleaning_notes": ["string"]
 }}"""

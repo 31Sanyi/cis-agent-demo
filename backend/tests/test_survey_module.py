@@ -9,6 +9,7 @@ from app.services.survey_demo_data import PHONE_DEMO_RESPONSE_CSV, PHONE_DEMO_SU
 from app.services.evidence_service import EvidenceService
 from app.services.report_service import ReportService
 from app.services.survey_llm_client import SurveyLLMConfigurationError
+from app.services.survey_response_cleaning_service import SurveyResponseCleaningService
 from app.services.survey_service import SurveyService
 from app.utils.csv_exporter import export_survey_template_csv
 from app.utils.csv_parser import SurveyCsvValidationError, infer_survey_from_csv, parse_survey_response_csv
@@ -127,6 +128,7 @@ def test_parse_survey_response_csv_stats_question_types():
     assert stats["questions"]["Q3"]["average"] == 4
     assert stats["questions"]["Q4"]["median"] == 35
     assert stats["questions"]["Q5"]["text_samples"] == ["体验不透明"]
+    assert len(stats["response_rows"]) == 3
 
 
 def test_parse_survey_response_csv_reports_missing_fields():
@@ -320,6 +322,9 @@ def test_phone_demo_revise_falls_back_without_survey_llm_key():
         assert upload_result.valid_count == 30
         assert upload_result.analysis.key_findings
         assert upload_result.analysis.survey_evidence["confidence"] > 0
+        assert upload_result.analysis.user_facing_summary
+        assert upload_result.analysis.data_quality_assessment.clean_count == 30
+        assert upload_result.evidence is None
         old_csv_upload_result = service.upload_and_analyze(saved.survey_id, "old_sample.csv", PHONE_DEMO_RESPONSE_CSV)
         assert old_csv_upload_result.valid_count == 30
         assert any(
@@ -529,11 +534,14 @@ Xiaomi,价格,3999,系统弹窗太多
         assert result.valid_count == 3
         assert result.analysis.survey_evidence["metadata"]["analysis_mode"] == "ad_hoc_csv"
         assert result.analysis.question_level_analysis
+        assert result.analysis.data_quality_assessment.clean_count == 3
+        assert result.analysis.user_facing_summary
+        assert result.knowledge_candidates is not None
     finally:
         session.close()
 
 
-def test_task_level_survey_flow_uses_planner_inputs_and_creates_survey_evidence():
+def test_task_level_survey_flow_uses_planner_inputs_and_returns_cleaned_survey_summary():
     class MissingKeyQuestionnaireAgent:
         def generate_survey(self, context):
             raise SurveyLLMConfigurationError("SURVEY_LLM_API_KEY is not configured")
@@ -589,11 +597,66 @@ def test_task_level_survey_flow_uses_planner_inputs_and_creates_survey_evidence(
         assert result.question_summaries
         assert result.hypothesis_findings
         assert result.survey_evidence
-        assert result.evidence
-        assert result.evidence["source_type"] == "survey"
-        assert result.evidence["local_ref"] == f"survey://{survey.survey_id}"
+        assert result.evidence is None
+        assert result.data_quality_assessment is not None
+        assert result.user_facing_summary
+        assert result.knowledge_candidates is not None
         saved_evidence = EvidenceService(session).list_for_task("task_planner", run_id=survey.run_id)
-        assert any(item.source_type == "survey" for item in saved_evidence)
+        assert not any(item.source_type == "survey" for item in saved_evidence)
+    finally:
+        session.close()
+
+
+def test_cleaning_service_excludes_duplicates_and_low_info_rows():
+    survey = _survey()
+    csv_content = """respondent_id,seat_lock_experience,feature_importance,satisfaction_score,pay_amount,open_feedback
+r1,经常,价格|体验,5,50,test
+r1,经常,价格|体验,5,50,test
+r2,,,,,   
+r3,偶尔,服务,3,20,不知道
+r4,经常,体验,4,60,希望改善价格透明度
+"""
+    raw_stats = parse_survey_response_csv(csv_content, survey)
+
+    result = SurveyResponseCleaningService().clean(survey, raw_stats)
+
+    assert result.data_quality.raw_count == 5
+    assert result.data_quality.clean_count == 3
+    assert result.data_quality.removed_count == 2
+    assert result.data_quality.can_enter_knowledge_base is False
+    assert any("blank_response" in item["reasons"] for item in result.data_quality.excluded_rows_summary)
+    assert any("duplicate_respondent_id" in item["reasons"] or "duplicate_response_pattern" in item["reasons"] for item in result.data_quality.excluded_rows_summary)
+
+
+def test_low_quality_upload_blocks_kb_candidates_and_returns_cleaning_fields():
+    class MissingKeyAnalysisAgent:
+        def analyze(self, survey_json, survey_stats_json, report_context):
+            raise SurveyLLMConfigurationError("SURVEY_LLM_API_KEY is not configured")
+
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    session = sessionmaker(bind=engine)()
+    try:
+        service = SurveyService(session, analysis_agent=MissingKeyAnalysisAgent())
+        saved = service.save_survey(_survey())
+        csv_content = """respondent_id,seat_lock_experience,feature_importance,satisfaction_score,pay_amount,open_feedback
+r1,经常,价格|体验,5,50,test
+r1,经常,价格|体验,5,50,test
+r2,,,,,
+r3,偶尔,服务,3,20,不知道
+r4,经常,体验,4,60,asdf
+"""
+        result = service.upload_and_analyze(saved.survey_id, "low_quality.csv", csv_content)
+
+        assert result.data_quality_assessment is not None
+        assert result.data_quality_assessment.clean_count < 10
+        assert result.data_quality_assessment.can_enter_knowledge_base is False
+        assert result.user_facing_summary
+        assert result.cleaning_preview
+        assert result.analysis.knowledge_candidates
+        assert all(candidate.should_write_to_kb is False for candidate in result.analysis.knowledge_candidates)
+        assert all(candidate.rejection_reason for candidate in result.analysis.knowledge_candidates)
+        assert result.evidence is None
     finally:
         session.close()
 
