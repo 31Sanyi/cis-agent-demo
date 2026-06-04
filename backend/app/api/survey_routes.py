@@ -56,6 +56,22 @@ def refine_task_survey(task_id: str, request: SurveyTaskRefineRequest, db: Sessi
 @router.get("/tasks/{task_id}/survey/export-csv")
 def export_task_survey_csv(task_id: str, db: Session = Depends(get_db)):
     try:
+        csv_content = SurveyService(db).export_csv_for_task(task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Task not found") from exc
+    except Exception as exc:  # noqa: BLE001
+        status_code, payload = survey_error_response(exc)
+        raise HTTPException(status_code=status_code, detail=payload) from exc
+    return Response(
+        content="\ufeff" + csv_content,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{task_id}_survey.csv"'},
+    )
+
+
+@router.get("/tasks/{task_id}/survey/response-template.csv")
+def export_task_survey_response_template_csv(task_id: str, db: Session = Depends(get_db)):
+    try:
         csv_content = SurveyService(db).export_response_csv_for_task(task_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
@@ -139,6 +155,25 @@ async def upload_ad_hoc_survey_responses(task_id: str, run_id: str, file: Upload
 def generate_survey_from_topic(request: SurveyTopicGenerateRequest, db: Session = Depends(get_db)):
     try:
         return SurveyService(db).generate_from_topic(request)
+    except Exception as exc:  # noqa: BLE001
+        status_code, payload = survey_error_response(exc)
+        raise HTTPException(status_code=status_code, detail=payload) from exc
+
+
+@router.post("/surveys/brief-from-qa")
+def generate_survey_brief_from_qa(request: SurveyTopicGenerateRequest, db: Session = Depends(get_db)):
+    try:
+        return SurveyService(db).build_brief_from_qa(request)
+    except Exception as exc:  # noqa: BLE001
+        status_code, payload = survey_error_response(exc)
+        raise HTTPException(status_code=status_code, detail=payload) from exc
+
+
+@router.post("/surveys/generate-from-brief")
+def generate_survey_from_brief(request: SurveyTopicGenerateRequest, db: Session = Depends(get_db)):
+    try:
+        brief = SurveyService(db).build_brief_from_qa(request) if request.brief is None else request.brief
+        return SurveyService(db).generate_from_brief(brief)
     except Exception as exc:  # noqa: BLE001
         status_code, payload = survey_error_response(exc)
         raise HTTPException(status_code=status_code, detail=payload) from exc

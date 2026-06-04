@@ -67,6 +67,39 @@ class SurveyContextExtensions(BaseModel):
     report_context_snapshot: dict[str, Any] = Field(default_factory=dict)
 
 
+class SurveyBriefMessage(BaseModel):
+    role: Literal["assistant", "user"]
+    content: str = Field(min_length=1)
+
+
+class SurveyBrief(BaseModel):
+    research_topic: str = ""
+    product_or_category: str = ""
+    target_respondents: str = ""
+    research_goal: str = ""
+    pain_points: list[str] = Field(default_factory=list)
+    competitors: list[str] = Field(default_factory=list)
+    requirements: str = ""
+    question_count: int = Field(default=10, ge=1, le=30)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SurveyReviewIssue(BaseModel):
+    severity: Literal["low", "medium", "high"]
+    issue: str = Field(min_length=1)
+    suggestion: str = Field(min_length=1)
+    related_question_id: str | None = None
+    related_pain_id: str | None = None
+
+
+class SurveyReviewResult(BaseModel):
+    passed: bool
+    score: int = Field(ge=0, le=100)
+    issues: list[SurveyReviewIssue] = Field(default_factory=list)
+    rewrite_instruction: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class QuestionnaireLaunchRecommendation(BaseModel):
     recommendation_type: str = "questionnaire_follow_up"
     launch_mode: str = "follow_up_sidecar"
@@ -218,11 +251,13 @@ class SurveyReorderRequest(BaseModel):
 
 
 class SurveyTopicGenerateRequest(BaseModel):
-    topic: str = Field(min_length=1)
+    topic: str = ""
     target_respondents: str = ""
     research_goal: str = ""
     requirements: str = ""
     question_count: int = Field(default=10, ge=1, le=30)
+    qa_messages: list[SurveyBriefMessage] = Field(default_factory=list)
+    brief: SurveyBrief | None = None
 
 
 class SurveyTaskRefineRequest(BaseModel):
@@ -251,12 +286,48 @@ class SurveyResponseBatch(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class SurveyDataQualityAssessment(BaseModel):
+    raw_count: int = 0
+    clean_count: int = 0
+    removed_count: int = 0
+    valid_ratio: float = 0.0
+    quality_score: float = Field(default=0.0, ge=0, le=1)
+    quality_level: Literal["high", "medium", "low", "unusable"] = "low"
+    can_enter_knowledge_base: bool = False
+    reasons: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    excluded_rows_summary: list[dict[str, Any]] = Field(default_factory=list)
+    cleaning_rules_applied: list[str] = Field(default_factory=list)
+
+
+class SurveyKnowledgeCandidate(BaseModel):
+    title: str
+    content: str
+    evidence_type: str = "survey_aggregate"
+    confidence: float = Field(default=0.0, ge=0, le=1)
+    sample_size: int = 0
+    clean_sample_size: int = 0
+    supporting_questions: list[str] = Field(default_factory=list)
+    related_pain_ids: list[str] = Field(default_factory=list)
+    related_claim_ids: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    should_write_to_kb: bool = False
+    rejection_reason: str | None = None
+
+
+class SurveyCleaningResult(BaseModel):
+    data_quality: SurveyDataQualityAssessment = Field(default_factory=SurveyDataQualityAssessment)
+    clean_stats: dict[str, Any] = Field(default_factory=dict)
+    cleaning_preview: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class SurveyAnalysis(BaseModel):
     analysis_id: str = Field(default_factory=lambda: f"analysis_{uuid4().hex[:10]}")
     survey_id: str
     batch_id: str
     summary: str
     executive_summary: str = ""
+    user_facing_summary: str = ""
     sample_summary: dict[str, Any] = Field(default_factory=dict)
     key_findings: list[dict[str, Any]] = Field(default_factory=list)
     question_level_analysis: list[dict[str, Any]] = Field(default_factory=list)
@@ -276,6 +347,9 @@ class SurveyAnalysis(BaseModel):
     recommended_report_revisions: list[dict[str, Any]] = Field(default_factory=list)
     next_research_questions: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
+    data_quality_assessment: SurveyDataQualityAssessment = Field(default_factory=SurveyDataQualityAssessment)
+    knowledge_candidates: list[SurveyKnowledgeCandidate] = Field(default_factory=list)
+    cleaning_notes: list[str] = Field(default_factory=list)
     dashboard_summary: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -296,3 +370,7 @@ class SurveyUploadResponse(BaseModel):
     hypothesis_findings: list[dict[str, Any]] = Field(default_factory=list)
     overall_summary: str = ""
     limitations: list[str] = Field(default_factory=list)
+    data_quality_assessment: SurveyDataQualityAssessment | None = None
+    knowledge_candidates: list[SurveyKnowledgeCandidate] = Field(default_factory=list)
+    user_facing_summary: str = ""
+    cleaning_preview: list[dict[str, Any]] = Field(default_factory=list)

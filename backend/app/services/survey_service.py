@@ -19,7 +19,13 @@ from app.schemas.survey import (
     Survey,
     SurveyAddQuestionRequest,
     SurveyAnalysis,
+    SurveyBrief,
+    SurveyBriefMessage,
+    SurveyCleaningResult,
+    SurveyDataQualityAssessment,
     SurveyGenerateRequest,
+    SurveyKnowledgeCandidate,
+    SurveyReviewResult,
     SurveyQuestionCreate,
     SurveyReorderRequest,
     SurveyResponseBatch,
@@ -29,9 +35,9 @@ from app.schemas.survey import (
     SurveyUpdateRequest,
     SurveyUploadResponse,
 )
-from app.services.evidence_service import EvidenceService
 from app.services.feedback_ingestion_service import FeedbackIngestionService
 from app.services.report_service import ReportService
+from app.services.survey_response_cleaning_service import SurveyResponseCleaningService
 from app.services.survey_demo_data import (
     PHONE_DEMO_RESPONSE_CSV,
     PHONE_DEMO_SURVEY_PAYLOAD,
@@ -63,6 +69,7 @@ class SurveyService:
         self.analysis_agent = analysis_agent or SurveyAnalysisAgent()
         self.pain_point_agent = pain_point_agent or PainPointResearchAgent()
         self.feedback_ingestion = FeedbackIngestionService()
+        self.response_cleaning = SurveyResponseCleaningService()
 
     def latest_for_run(self, task_id: str, run_id: str) -> Survey | None:
         row = (
@@ -99,13 +106,7 @@ class SurveyService:
             raise KeyError(task_id)
         context = self._context_from_request(task, request)
         context["pain_points"] = self._pain_points_for_context(task, context.get("planner_context") or {}, context)
-        try:
-            raw = self.questionnaire_agent.generate_survey(context)
-        except (SurveyLLMConfigurationError, RuntimeError, ValueError):
-            raw = self._fallback_survey_payload(context)
-        raw.setdefault("pain_points", context.get("pain_points", []))
-        raw.setdefault("planner_snapshot", context.get("planner_context", {}))
-        raw.setdefault("report_context_snapshot", context.get("report_context", {}))
+        raw = self._generate_report_survey_payload(context)
         survey = self._survey_from_llm_payload(task_id, run_id, raw, context["claims_json"], status="draft", version=1)
         return self.save_survey(survey)
 
@@ -125,13 +126,7 @@ class SurveyService:
         context = self._context_from_task_and_planner(task, planner_context, report_context)
         context["force_generate"] = force_generate
         context["pain_points"] = self._pain_points_for_context(task, planner_context, report_context)
-        try:
-            raw = self.questionnaire_agent.generate_survey(context)
-        except (SurveyLLMConfigurationError, RuntimeError, ValueError):
-            raw = self._fallback_survey_payload(context)
-        raw.setdefault("pain_points", context.get("pain_points", []))
-        raw.setdefault("planner_snapshot", planner_context)
-        raw.setdefault("report_context_snapshot", report_context)
+        raw = self._generate_report_survey_payload(context)
         survey = self._survey_from_llm_payload(
             task_id,
             run_id,
@@ -183,41 +178,33 @@ class SurveyService:
             diagnostics=diagnostics,
         )
 
-    def generate_from_topic(self, request: SurveyTopicGenerateRequest) -> Survey:
+    def build_brief_from_qa(self, request: SurveyTopicGenerateRequest) -> SurveyBrief:
+        if request.brief:
+            return SurveyBrief.model_validate(request.brief)
         context = {
-            "topic": request.topic,
-            "product_name": request.topic,
-            "competitors": [],
-            "industry": "topic_survey",
-            "region": "",
-            "report_markdown": "",
-            "claims_json": [],
-            "uncertain_findings": [],
-            "target_respondents": request.target_respondents or "该话题相关目标用户",
-            "research_goal": request.research_goal or f"围绕“{request.topic}”收集可统计的用户反馈。",
-            "requirements": request.requirements,
-            "user_requirements": request.requirements,
+            "qa_messages": [message.model_dump(mode="json") for message in request.qa_messages],
             "question_count": request.question_count,
-            "planner_context": {
-                "survey_inputs": {
-                    "objective": request.research_goal or f"围绕“{request.topic}”收集可统计的用户反馈。",
-                    "respondent_type": request.target_respondents or "该话题相关目标用户",
-                    "question_themes": ["认知与需求", "使用体验", "选择因素", "付费意愿", "开放反馈"],
-                    "hypotheses": [],
-                    "metadata": {"source": "topic_generation"},
-                }
-            },
         }
-        context["pain_points"] = self._topic_pain_points(request.topic)
         try:
-            raw = self.questionnaire_agent.generate_from_topic(context)
-        except (AttributeError, SurveyLLMConfigurationError, RuntimeError, ValueError):
+            raw = self.questionnaire_agent.build_survey_brief_from_qa(context)
+        except (SurveyLLMConfigurationError, RuntimeError, ValueError, AttributeError):
+            raw = self._brief_from_topic_request(request)
+        return SurveyBrief.model_validate(raw)
+
+    def generate_from_brief(self, brief: SurveyBrief) -> Survey:
+        brief_payload = brief.model_dump(mode="json")
+        context = self._context_from_survey_brief(brief_payload)
+        context["pain_points"] = self._pain_points_from_brief(brief_payload)
+        try:
+            if hasattr(self.questionnaire_agent, "generate_from_brief_with_self_review"):
+                raw = self.questionnaire_agent.generate_from_brief_with_self_review(brief_payload, max_review_rounds=3)
+            elif hasattr(self.questionnaire_agent, "generate_from_topic"):
+                raw = self.questionnaire_agent.generate_from_topic(context)
+            else:
+                raise AttributeError("QuestionnaireAgent does not support brief generation")
+        except (SurveyLLMConfigurationError, RuntimeError, ValueError, AttributeError):
             raw = self._fallback_survey_payload(context)
-            raw["survey_title"] = f"{request.topic} 调研问卷"
-            raw["survey_description"] = "根据用户输入话题生成的独立问卷，可导出答卷模板并上传 CSV 分析。"
-            raw["target_respondents"] = context["target_respondents"]
-            raw["research_goal"] = context["research_goal"]
-            raw["metadata"] = {**dict(raw.get("metadata") or {}), "source": "topic_generation", "topic": request.topic}
+            raw = self._attach_self_review_metadata(raw, brief_payload)
         raw.setdefault("pain_points", context.get("pain_points", []))
         survey = self._survey_from_llm_payload(
             "manual_topic",
@@ -229,7 +216,19 @@ class SurveyService:
         )
         survey.metadata.update(
             {
-                "source": "topic_generation",
+                "source": "brief_generation",
+                "brief": brief_payload,
+                "requirements": brief.requirements,
+            }
+        )
+        return self.save_survey(survey)
+
+    def generate_from_topic(self, request: SurveyTopicGenerateRequest) -> Survey:
+        brief = self._resolve_brief_from_request(request)
+        survey = self.generate_from_brief(brief)
+        survey.metadata.update(
+            {
+                "source": "topic_generation" if request.topic else "brief_generation",
                 "topic": request.topic,
                 "requirements": request.requirements,
             }
@@ -390,6 +389,14 @@ class SurveyService:
             self.save_survey(survey.model_copy(update={"status": "exported"}))
         return export_survey_response_template_csv(survey)
 
+    def export_csv_for_task(self, task_id: str) -> str:
+        survey = self.latest_for_task(task_id)
+        if survey is None:
+            survey = self.generate_for_task(task_id)
+        if survey.status not in {"exported", "responses_uploaded", "analyzed"}:
+            self.save_survey(survey.model_copy(update={"status": "exported"}))
+        return export_survey_template_csv(survey)
+
     def export_demo_response_csv(self, survey_id: str) -> str:
         survey = self.get_survey(survey_id)
         if self._is_phone_demo_survey(survey):
@@ -511,6 +518,8 @@ class SurveyService:
         force_generic: bool = False,
         ingestion: Any | None = None,
     ) -> SurveyUploadResponse:
+        cleaning_result = self.response_cleaning.clean(survey, raw_stats, ingestion=ingestion)
+        analysis_stats = cleaning_result.clean_stats or raw_stats
         batch = SurveyResponseBatch(
             survey_id=survey.survey_id,
             file_name=file_name,
@@ -524,15 +533,24 @@ class SurveyService:
                 "file_name": file_name,
                 "parse_warnings": getattr(ingestion, "parse_warnings", []),
                 "question_mapping": getattr(ingestion, "question_mapping", {}),
+                "data_quality_assessment": cleaning_result.data_quality.model_dump(mode="json"),
+                "cleaning_rules_applied": cleaning_result.data_quality.cleaning_rules_applied,
+                "excluded_rows_summary": cleaning_result.data_quality.excluded_rows_summary,
             },
         )
         self.save_batch(batch)
-        analysis = self._analyze_or_fallback(survey, batch, raw_stats, force_generic=force_generic)
+        analysis = self._analyze_or_fallback(
+            survey,
+            batch,
+            raw_stats,
+            analysis_stats,
+            cleaning_result,
+            force_generic=force_generic,
+        )
+        analysis = _ensure_analysis_quality_fields(analysis, cleaning_result)
         self.save_analysis(analysis)
         saved_survey = self.save_survey(survey.model_copy(update={"status": "analyzed"}))
         survey_evidence = survey_analysis_to_survey_evidence(analysis, saved_survey, saved_survey.task_id, saved_survey.run_id)
-        evidence = survey_evidence_to_evidence(survey_evidence)
-        EvidenceService(self.db).save_many(saved_survey.task_id, [evidence], run_id=saved_survey.run_id)
         return SurveyUploadResponse(
             batch_id=batch.batch_id,
             analysis_id=analysis.analysis_id,
@@ -544,11 +562,15 @@ class SurveyService:
             analysis=analysis,
             survey=saved_survey,
             survey_evidence=survey_evidence.model_dump(mode="json"),
-            evidence=evidence.model_dump(mode="json"),
+            evidence=None,
             question_summaries=analysis.question_summaries,
             hypothesis_findings=analysis.hypothesis_findings,
             overall_summary=analysis.dashboard_summary,
             limitations=analysis.limitations,
+            data_quality_assessment=analysis.data_quality_assessment,
+            knowledge_candidates=analysis.knowledge_candidates,
+            user_facing_summary=analysis.user_facing_summary,
+            cleaning_preview=cleaning_result.cleaning_preview,
         )
 
     def _analyze_or_fallback(
@@ -556,23 +578,41 @@ class SurveyService:
         survey: Survey,
         batch: SurveyResponseBatch,
         raw_stats: dict[str, Any],
+        analysis_stats: dict[str, Any],
+        cleaning_result: SurveyCleaningResult,
         *,
         force_generic: bool = False,
     ) -> SurveyAnalysis:
         report_context = self._report_context(survey)
         if force_generic:
-            return self._build_generic_analysis(survey, batch, raw_stats, report_context)
+            return self._build_generic_analysis(survey, batch, analysis_stats, report_context, cleaning_result)
         try:
             raw_analysis = self.analysis_agent.analyze(
                 survey.model_dump(mode="json"),
-                raw_stats,
+                analysis_stats,
                 report_context,
+            )
+            limitations = list(raw_analysis.get("limitations") or _default_limitations(cleaning_result.data_quality.clean_count))
+            knowledge_candidates = _normalize_knowledge_candidates(
+                raw_analysis.get("knowledge_candidates"),
+                cleaning_result,
+                batch.sample_size,
+            )
+            user_facing_summary = str(
+                raw_analysis.get("user_facing_summary")
+                or _build_user_facing_summary(
+                    cleaning_result.data_quality,
+                    list(raw_analysis.get("key_findings") or []),
+                    list(raw_analysis.get("limitations") or []),
+                    list(raw_analysis.get("next_research_questions") or []),
+                )
             )
             return SurveyAnalysis(
                 survey_id=survey.survey_id,
                 batch_id=batch.batch_id,
                 summary=str(raw_analysis.get("dashboard_summary") or raw_analysis.get("summary") or ""),
                 executive_summary=str(raw_analysis.get("executive_summary") or raw_analysis.get("dashboard_summary") or ""),
+                user_facing_summary=user_facing_summary,
                 sample_summary=dict(raw_analysis.get("sample_summary") or {}),
                 key_findings=list(raw_analysis.get("key_findings") or []),
                 question_level_analysis=list(raw_analysis.get("question_level_analysis") or []),
@@ -581,8 +621,8 @@ class SurveyService:
                 willingness_to_pay=raw_analysis.get("willingness_to_pay"),
                 switching_risk=raw_analysis.get("switching_risk"),
                 survey_evidence=dict(raw_analysis.get("survey_evidence") or {}),
-                question_summaries=_question_summaries_from_stats(survey, raw_stats),
-                hypothesis_findings=_hypothesis_findings(survey, raw_stats),
+                question_summaries=_question_summaries_from_stats(survey, analysis_stats),
+                hypothesis_findings=_hypothesis_findings(survey, analysis_stats),
                 pain_point_validation=list(raw_analysis.get("pain_point_validation") or []),
                 pain_point_ranking=list(raw_analysis.get("pain_point_ranking") or []),
                 claim_validation_matrix=list(raw_analysis.get("claim_validation_matrix") or []),
@@ -591,13 +631,18 @@ class SurveyService:
                 pricing_and_wtp_analysis=dict(raw_analysis.get("pricing_and_wtp_analysis") or {}),
                 recommended_report_revisions=list(raw_analysis.get("recommended_report_revisions") or []),
                 next_research_questions=list(raw_analysis.get("next_research_questions") or []),
-                limitations=list(raw_analysis.get("limitations") or _default_limitations(batch.valid_count)),
+                limitations=limitations,
+                data_quality_assessment=SurveyDataQualityAssessment.model_validate(
+                    raw_analysis.get("data_quality_assessment") or cleaning_result.data_quality.model_dump(mode="json")
+                ),
+                knowledge_candidates=knowledge_candidates,
+                cleaning_notes=list(raw_analysis.get("cleaning_notes") or _cleaning_notes_from_result(cleaning_result)),
                 dashboard_summary=str(raw_analysis.get("dashboard_summary") or "问卷分析已完成。"),
             )
         except (SurveyLLMConfigurationError, RuntimeError, ValueError):
             if self._is_phone_demo_survey(survey):
                 return build_phone_demo_analysis(survey, batch, raw_stats)
-            return self._build_generic_analysis(survey, batch, raw_stats, report_context)
+            return self._build_generic_analysis(survey, batch, analysis_stats, report_context, cleaning_result)
 
     def _build_generic_analysis(
         self,
@@ -605,9 +650,11 @@ class SurveyService:
         batch: SurveyResponseBatch,
         raw_stats: dict[str, Any],
         report_context: dict[str, Any],
+        cleaning_result: SurveyCleaningResult,
     ) -> SurveyAnalysis:
         stats_by_field = _stats_by_field(raw_stats)
-        confidence = 0.72 if batch.valid_count >= 30 else 0.6 if batch.valid_count >= 10 else 0.45
+        clean_count = cleaning_result.data_quality.clean_count
+        confidence = 0.72 if clean_count >= 30 else 0.6 if clean_count >= 10 else 0.45
         question_level_analysis = []
         key_findings = []
         for question in survey.questions:
@@ -657,25 +704,43 @@ class SurveyService:
             "暂未在自定义问卷中识别到明显的品牌切换字段。",
         )
         dashboard_summary = (
-            f"已基于上传 CSV 完成自定义问卷分析：共 {batch.sample_size} 条样本、"
-            f"{batch.valid_count} 条有效记录、{len(survey.questions)} 个字段。"
+            f"已基于清洗后的问卷样本完成分析：原始 {cleaning_result.data_quality.raw_count} 条，"
+            f"保留 {clean_count} 条可信样本，数据质量 {cleaning_result.data_quality.quality_level}。"
         )
         if key_findings:
             dashboard_summary += f" 主要信号：{key_findings[0]['finding']}"
         if pain_validation:
             dashboard_summary += f" 痛点验证最高优先级：{pain_ranking[0]['pain_point']}。"
         executive_summary = dashboard_summary
+        limitations = list(dict.fromkeys([
+            *cleaning_result.data_quality.reasons,
+            *cleaning_result.data_quality.warnings,
+            *_default_limitations(clean_count),
+        ]))
+        knowledge_candidates = _knowledge_candidates_from_generic_analysis(
+            key_findings,
+            pain_validation,
+            cleaning_result,
+            batch.sample_size,
+        )
+        user_facing_summary = _build_user_facing_summary(
+            cleaning_result.data_quality,
+            key_findings,
+            limitations,
+            [item.get("recommended_report_update", "") for item in pain_validation[:3] if item.get("recommended_report_update")],
+        )
 
         return SurveyAnalysis(
             survey_id=survey.survey_id,
             batch_id=batch.batch_id,
             summary=dashboard_summary,
             executive_summary=executive_summary,
+            user_facing_summary=user_facing_summary,
             sample_summary={
-                "sample_size": batch.sample_size,
-                "valid_count": batch.valid_count,
-                "invalid_count": batch.invalid_count,
-                "limitations": _default_limitations(batch.valid_count),
+                "sample_size": cleaning_result.data_quality.raw_count,
+                "valid_count": clean_count,
+                "invalid_count": cleaning_result.data_quality.removed_count,
+                "limitations": limitations,
             },
             key_findings=key_findings,
             question_level_analysis=question_level_analysis,
@@ -688,10 +753,12 @@ class SurveyService:
                 "confidence": confidence,
                 "metadata": {
                     "sample_size": batch.sample_size,
-                    "valid_count": batch.valid_count,
+                    "valid_count": clean_count,
                     "source_type": "survey",
                     "analysis_mode": "pain_point_validation" if pain_validation else ("ad_hoc_csv" if raw_stats.get("source_type") in {None, "csv"} else "ad_hoc_feedback"),
                     "csv_columns": raw_stats.get("csv_columns", []),
+                    "cleaned": True,
+                    "quality_level": cleaning_result.data_quality.quality_level,
                 },
             },
             question_summaries=_question_summaries_from_stats(survey, raw_stats),
@@ -706,8 +773,11 @@ class SurveyService:
             },
             pricing_and_wtp_analysis={"summary": willingness_to_pay},
             recommended_report_revisions=recommended_revisions,
-            limitations=_default_limitations(batch.valid_count),
+            limitations=limitations,
             next_research_questions=[item.get("recommended_report_update", "") for item in pain_validation[:3] if item.get("recommended_report_update")],
+            data_quality_assessment=cleaning_result.data_quality,
+            knowledge_candidates=knowledge_candidates,
+            cleaning_notes=_cleaning_notes_from_result(cleaning_result),
             dashboard_summary=dashboard_summary,
         )
 
@@ -1039,6 +1109,109 @@ class SurveyService:
             }
         ]
 
+    def _resolve_brief_from_request(self, request: SurveyTopicGenerateRequest) -> SurveyBrief:
+        if request.brief is not None:
+            return SurveyBrief.model_validate(request.brief)
+        if request.qa_messages:
+            return self.build_brief_from_qa(request)
+        return SurveyBrief.model_validate(self._brief_from_topic_request(request))
+
+    def _brief_from_topic_request(self, request: SurveyTopicGenerateRequest) -> dict[str, Any]:
+        topic = request.topic.strip() or "用户需求验证"
+        return {
+            "research_topic": topic,
+            "product_or_category": topic,
+            "target_respondents": request.target_respondents or "该话题相关目标用户",
+            "research_goal": request.research_goal or f"围绕“{topic}”收集可统计的用户反馈。",
+            "requirements": request.requirements,
+            "question_count": request.question_count,
+            "pain_points": [item["pain_point"] for item in self._topic_pain_points(topic)],
+            "competitors": [],
+            "metadata": {"source": "legacy_topic_compat"},
+        }
+
+    def _context_from_survey_brief(self, brief: dict[str, Any]) -> dict[str, Any]:
+        research_topic = str(brief.get("research_topic") or brief.get("product_or_category") or "用户调研主题")
+        target_respondents = str(brief.get("target_respondents") or "相关目标用户")
+        research_goal = str(brief.get("research_goal") or f"围绕“{research_topic}”收集可统计的用户反馈。")
+        requirements = str(brief.get("requirements") or "")
+        competitors = [str(item) for item in brief.get("competitors") or [] if str(item).strip()]
+        question_count = int(brief.get("question_count") or 10)
+        return {
+            "topic": research_topic,
+            "product_name": str(brief.get("product_or_category") or research_topic),
+            "competitors": competitors,
+            "industry": "topic_survey",
+            "region": "",
+            "report_markdown": "",
+            "claims_json": [],
+            "uncertain_findings": list(brief.get("pain_points") or []),
+            "target_respondents": target_respondents,
+            "research_goal": research_goal,
+            "requirements": requirements,
+            "user_requirements": requirements,
+            "question_count": question_count,
+            "planner_context": {
+                "survey_inputs": {
+                    "objective": research_goal,
+                    "respondent_type": target_respondents,
+                    "question_themes": ["认知与需求", "核心痛点", "竞品影响", "解决方案优先级", "开放反馈"],
+                    "hypotheses": list(brief.get("pain_points") or []),
+                    "metadata": {"source": "brief_generation"},
+                }
+            },
+            "brief": brief,
+        }
+
+    def _pain_points_from_brief(self, brief: dict[str, Any]) -> list[dict[str, Any]]:
+        pain_points = [str(item).strip() for item in brief.get("pain_points") or [] if str(item).strip()]
+        if not pain_points:
+            pain_points = [item["pain_point"] for item in self._topic_pain_points(str(brief.get("research_topic") or brief.get("product_or_category") or "该主题"))]
+        return [
+            {
+                "pain_id": f"P{index}",
+                "pain_point": pain_point,
+                "source_from_report": "brief_generation",
+                "confidence": 0.5,
+                "why_need_survey": "需要用问卷验证该痛点是否真实、普遍并影响决策。",
+                "research_questions": ["该痛点是否存在？", "它的严重程度如何？", "它是否影响选择或转向竞品？"],
+                "metadata": {"source": "brief_generation", **dict(brief.get("metadata") or {})},
+            }
+            for index, pain_point in enumerate(pain_points[:5], start=1)
+        ]
+
+    def _generate_report_survey_payload(self, context: dict[str, Any]) -> dict[str, Any]:
+        try:
+            if hasattr(self.questionnaire_agent, "generate_with_self_review"):
+                raw = self.questionnaire_agent.generate_with_self_review(context, max_review_rounds=3)
+            else:
+                raw = self.questionnaire_agent.generate_survey(context)
+                raw = self._attach_self_review_metadata(raw, context)
+        except (SurveyLLMConfigurationError, RuntimeError, ValueError, AttributeError):
+            raw = self._fallback_survey_payload(context)
+            raw = self._attach_self_review_metadata(raw, context)
+        raw.setdefault("pain_points", context.get("pain_points", []))
+        raw.setdefault("planner_snapshot", context.get("planner_context", {}))
+        raw.setdefault("report_context_snapshot", context.get("report_context", {}))
+        return raw
+
+    def _attach_self_review_metadata(self, raw: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        if hasattr(self.questionnaire_agent, "review_survey"):
+            review = self.questionnaire_agent.review_survey(raw, context)
+        else:
+            review = {
+                "passed": True,
+                "score": 75,
+                "issues": [],
+                "rewrite_instruction": "",
+                "metadata": {"review_mode": "compat_fallback"},
+            }
+        raw.setdefault("metadata", {})
+        raw["metadata"]["review_result"] = review
+        raw["metadata"]["self_review_passed"] = bool(review.get("passed"))
+        raw["metadata"]["self_review_rounds"] = 1
+        return raw
+
     def _fallback_survey_payload(self, context: dict[str, Any]) -> dict[str, Any]:
         planner_context = context.get("planner_context") or {}
         survey_inputs = planner_context.get("survey_inputs") or {}
@@ -1219,6 +1392,15 @@ class SurveyService:
         removed_questions: list[dict[str, str]] = []
         added_questions: list[dict[str, str]] = []
         request_text = revision_request.strip()
+        if _contains_any(request_text, ["新增", "补充", "生成"]) and _contains_any(request_text, ["问题", "题目", "一道题", "新问题"]):
+            generated_question = _generate_additional_question_for_survey(survey, questions, request_text)
+            questions.append(generated_question)
+            added_questions.append(
+                {
+                    "question_id": str(generated_question.get("question_id") or ""),
+                    "reason": "根据用户请求自动补充的新问题。",
+                }
+            )
         if _contains_any(request_text, ["价格", "预算", "付费", "溢价"]) and not _has_field(questions, "price_sensitivity"):
             questions.append(
                 {
@@ -1615,6 +1797,8 @@ def _loose_stats_from_rows(survey: Survey, rows: list[dict[str, Any]], columns: 
         "invalid_count": 0,
         "csv_columns": columns,
         "questions": stats_by_question,
+        "response_rows": rows,
+        "required_fields": [question.field_name for question in survey.questions if question.required],
     }
 
 
@@ -1962,6 +2146,165 @@ def _generic_claim_updates(report_context: dict[str, Any]) -> list[dict[str, str
     return updates
 
 
+def _normalize_knowledge_candidates(
+    raw_candidates: Any,
+    cleaning_result: SurveyCleaningResult,
+    sample_size: int,
+) -> list[SurveyKnowledgeCandidate]:
+    candidates: list[SurveyKnowledgeCandidate] = []
+    for raw in raw_candidates or []:
+        if not isinstance(raw, dict):
+            continue
+        payload = dict(raw)
+        if not payload.get("title") or not payload.get("content"):
+            continue
+        payload.setdefault("sample_size", sample_size)
+        payload.setdefault("clean_sample_size", cleaning_result.data_quality.clean_count)
+        payload.setdefault(
+            "limitations",
+            list(dict.fromkeys([
+                *cleaning_result.data_quality.reasons,
+                *cleaning_result.data_quality.warnings,
+            ])),
+        )
+        if not cleaning_result.data_quality.can_enter_knowledge_base:
+            payload["should_write_to_kb"] = False
+            payload["rejection_reason"] = payload.get("rejection_reason") or "当前数据质量未达到知识库沉淀门槛。"
+        try:
+            candidates.append(SurveyKnowledgeCandidate.model_validate(payload))
+        except Exception:  # noqa: BLE001
+            continue
+    return candidates
+
+
+def _knowledge_candidates_from_generic_analysis(
+    key_findings: list[dict[str, Any]],
+    pain_validation: list[dict[str, Any]],
+    cleaning_result: SurveyCleaningResult,
+    sample_size: int,
+) -> list[SurveyKnowledgeCandidate]:
+    candidates: list[SurveyKnowledgeCandidate] = []
+    for finding in key_findings[:2]:
+        title = str(finding.get("finding") or "").strip()
+        if not title:
+            continue
+        confidence = float(finding.get("confidence") or 0.0)
+        should_write = cleaning_result.data_quality.can_enter_knowledge_base and confidence >= 0.6
+        candidates.append(
+            SurveyKnowledgeCandidate(
+                title=title[:80],
+                content=str(finding.get("explanation") or title),
+                confidence=confidence,
+                sample_size=sample_size,
+                clean_sample_size=cleaning_result.data_quality.clean_count,
+                supporting_questions=[str(item) for item in finding.get("supporting_questions") or []],
+                limitations=list(dict.fromkeys([
+                    *cleaning_result.data_quality.reasons,
+                    *cleaning_result.data_quality.warnings,
+                ])),
+                should_write_to_kb=should_write,
+                rejection_reason=None if should_write else "当前质量门槛未满足或结论置信度不足。",
+            )
+        )
+    for item in pain_validation[:1]:
+        title = str(item.get("pain_point") or item.get("pain_id") or "").strip()
+        if not title:
+            continue
+        confidence = float(item.get("confidence") or 0.0)
+        should_write = cleaning_result.data_quality.can_enter_knowledge_base and confidence >= 0.6
+        candidates.append(
+            SurveyKnowledgeCandidate(
+                title=f"用户痛点候选：{title}",
+                content=str(item.get("evidence_summary") or item.get("recommended_report_update") or title),
+                confidence=confidence,
+                sample_size=sample_size,
+                clean_sample_size=cleaning_result.data_quality.clean_count,
+                supporting_questions=[str(q) for q in item.get("supporting_questions") or []],
+                related_pain_ids=[str(item.get("pain_id"))] if item.get("pain_id") else [],
+                limitations=list(dict.fromkeys([
+                    *cleaning_result.data_quality.reasons,
+                    *cleaning_result.data_quality.warnings,
+                ])),
+                should_write_to_kb=should_write,
+                rejection_reason=None if should_write else "当前质量门槛未满足或结论置信度不足。",
+            )
+        )
+    return candidates[:3]
+
+
+def _cleaning_notes_from_result(cleaning_result: SurveyCleaningResult) -> list[str]:
+    return list(
+        dict.fromkeys(
+            [
+                *cleaning_result.data_quality.warnings,
+                *cleaning_result.data_quality.reasons,
+            ]
+        )
+    )
+
+
+def _build_user_facing_summary(
+    data_quality: SurveyDataQualityAssessment,
+    key_findings: list[dict[str, Any]],
+    limitations: list[str],
+    next_research_questions: list[str],
+) -> str:
+    top_finding = ""
+    for finding in key_findings:
+        top_finding = str(finding.get("finding") or finding.get("explanation") or "").strip()
+        if top_finding:
+            break
+    cautious_note = limitations[0] if limitations else "当前样本仍需要结合更多公开证据或后续调研复核。"
+    next_step = next_research_questions[0] if next_research_questions else "补充更多目标受访者样本，并复核关键结论。"
+    return (
+        f"本次共上传 {data_quality.raw_count} 条问卷反馈，经数据清洗后保留 {data_quality.clean_count} 条可信样本，"
+        f"数据质量评级为 {data_quality.quality_level}。"
+        f"{(' 当前最强信号是' + top_finding + '。') if top_finding else ' 当前样本已形成初步用户侧信号。'}"
+        f" 但需要谨慎的是：{cautious_note}"
+        f" 下一步建议优先 {next_step}"
+    )
+
+
+def _ensure_analysis_quality_fields(
+    analysis: SurveyAnalysis,
+    cleaning_result: SurveyCleaningResult,
+) -> SurveyAnalysis:
+    data_quality = analysis.data_quality_assessment
+    if data_quality.raw_count == 0 and cleaning_result.data_quality.raw_count > 0:
+        data_quality = cleaning_result.data_quality
+    knowledge_candidates = analysis.knowledge_candidates or _knowledge_candidates_from_generic_analysis(
+        analysis.key_findings,
+        analysis.pain_point_validation,
+        cleaning_result,
+        data_quality.raw_count or int(analysis.sample_summary.get("sample_size") or 0),
+    )
+    if not data_quality.can_enter_knowledge_base:
+        knowledge_candidates = [
+            candidate.model_copy(
+                update={
+                    "should_write_to_kb": False,
+                    "rejection_reason": candidate.rejection_reason or "当前数据质量未达到知识库沉淀门槛。",
+                }
+            )
+            for candidate in knowledge_candidates
+        ]
+    user_facing_summary = analysis.user_facing_summary or _build_user_facing_summary(
+        data_quality,
+        analysis.key_findings,
+        analysis.limitations,
+        analysis.next_research_questions,
+    )
+    cleaning_notes = analysis.cleaning_notes or _cleaning_notes_from_result(cleaning_result)
+    return analysis.model_copy(
+        update={
+            "user_facing_summary": user_facing_summary,
+            "data_quality_assessment": data_quality,
+            "knowledge_candidates": knowledge_candidates,
+            "cleaning_notes": cleaning_notes,
+        }
+    )
+
+
 def _top_distribution_item(distribution: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     return max(distribution.items(), key=lambda item: int(item[1].get("count", 0)))
 
@@ -2094,6 +2437,72 @@ def _extract_question_limit(text: str) -> int | None:
 
 def _has_field(questions: list[dict[str, Any]], field_name: str) -> bool:
     return any(question.get("field_name") == field_name for question in questions)
+
+
+def _generate_additional_question_for_survey(
+    survey: Survey,
+    questions: list[dict[str, Any]],
+    request_text: str,
+) -> dict[str, Any]:
+    existing_texts = {
+        str(question.get("question_text") or "").strip()
+        for question in questions
+        if str(question.get("question_text") or "").strip()
+    }
+    covered_pain_ids = {
+        str(question.get("maps_to_pain_id") or "")
+        for question in questions
+        if str(question.get("maps_to_pain_id") or "").strip()
+    }
+    target_pain = next((pain for pain in survey.pain_points if pain.pain_id not in covered_pain_ids), None)
+    if target_pain is None and survey.pain_points:
+        target_pain = survey.pain_points[0]
+    next_index = len(questions) + 1
+    question_type = "text" if _contains_any(request_text, ["开放", "文本", "open"]) else "single_choice"
+    if _contains_any(request_text, ["评分", "严重程度", "影响多大"]):
+        question_type = "rating"
+    base_question_text = (
+        f"对于“{target_pain.pain_point}”，它是否会影响你的继续使用、购买决策或推荐意愿？"
+        if target_pain
+        else "你认为当前问卷还缺少哪类最关键的验证问题？"
+    )
+    if base_question_text in existing_texts:
+        base_question_text = (
+            f"如果竞品能更好解决“{target_pain.pain_point}”，你会多大程度考虑转向竞品？"
+            if target_pain
+            else "还有哪类问题最值得补充进这份问卷？"
+        )
+    if base_question_text in existing_texts:
+        base_question_text = "请补充说明你对当前主题最希望进一步验证的一个问题是什么？"
+        question_type = "text"
+    options: list[str] = []
+    metric_role = "open_feedback" if question_type == "text" else "switching_risk"
+    analysis_method = "提取代表性文本主题，识别用户尚未覆盖的关键补充信息。"
+    if question_type == "single_choice":
+        options = ["影响很大", "有一定影响", "影响较小", "几乎没有影响"]
+        analysis_method = "统计各选项分布，判断该问题对用户决策的影响强度。"
+    elif question_type == "rating":
+        options = ["1", "2", "3", "4", "5"]
+        metric_role = "pain_severity"
+        analysis_method = "计算平均分与高分占比，衡量该问题的重要程度。"
+    return {
+        "question_id": f"Q{next_index}",
+        "field_name": _field_name_from_question(f"Q{next_index}", base_question_text),
+        "question_text": base_question_text,
+        "question_type": question_type,
+        "options": options,
+        "required": False if question_type == "text" else True,
+        "analysis_goal": "补充当前问卷覆盖不足的验证维度。",
+        "related_claim_id": (target_pain.related_claim_ids[0] if target_pain and target_pain.related_claim_ids else None),
+        "maps_to_pain_id": target_pain.pain_id if target_pain else None,
+        "research_purpose": "补充当前覆盖不足的痛点或问卷目标。",
+        "analysis_method": analysis_method,
+        "metric_role": metric_role,
+        "reason": "根据用户请求由系统自动补充的新问题。",
+        "theme": target_pain.pain_point if target_pain else "补充验证",
+        "hypothesis": target_pain.pain_point if target_pain else None,
+        "order": next_index,
+    }
 
 
 def _remove_questions_by_field(questions: list[dict[str, Any]], fields: set[str]) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:

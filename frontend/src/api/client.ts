@@ -1,4 +1,4 @@
-import type { CollectorStatus, Dag, Evidence, LlmStatus, QaResult, Report, SearchTestResult, Survey, SurveyAnalysis, SurveyQuestionCreate, SurveyPlannerContext, SurveyRevisionResponse, SurveyTopicGenerateRequest, SurveyUpdateRequest, SurveyUploadResponse, Task, TaskRun, TraceRecord } from "./types";
+import type { CollectorStatus, Dag, Evidence, LlmStatus, QaResult, Report, SearchTestResult, Survey, SurveyAnalysis, SurveyBrief, SurveyQuestionCreate, SurveyPlannerContext, SurveyRevisionResponse, SurveyTopicGenerateRequest, SurveyUpdateRequest, SurveyUploadResponse, Task, TaskRun, TraceRecord } from "./types";
 import { apiRecorder } from "./recorder";
 
 const baseUrl = "";
@@ -113,11 +113,16 @@ export const api = {
   refineTaskSurvey: (taskId: string, payload: { survey_id: string; instruction: string }) =>
     request<SurveyRevisionResponse>(`/api/tasks/${taskId}/survey/refine`, { label: "refineTaskSurvey", method: "POST", body: JSON.stringify(payload) }),
   exportTaskSurveyCsv: (taskId: string) => textRequest(`/api/tasks/${taskId}/survey/export-csv`),
+  exportTaskSurveyResponseTemplateCsv: (taskId: string) => textRequest(`/api/tasks/${taskId}/survey/response-template.csv`),
   surveyTaskAnalysis: (taskId: string) => request<SurveyAnalysis | { status: string }>(`/api/tasks/${taskId}/survey/analysis`, { label: "surveyTaskAnalysis", method: "GET" }),
   generateSurvey: (taskId: string, runId: string, payload: Record<string, unknown>) =>
     request<Survey>(`/api/tasks/${taskId}/runs/${runId}/survey/generate`, { label: "generateSurvey", method: "POST", body: JSON.stringify(payload) }),
   createPhoneDemoSurvey: (taskId: string, runId: string) =>
     request<SurveyUploadResponse>(`/api/tasks/${taskId}/runs/${runId}/survey/demo-phone`, { label: "createPhoneDemoSurvey", method: "POST" }),
+  buildSurveyBriefFromQa: (payload: SurveyTopicGenerateRequest) =>
+    request<SurveyBrief>("/api/surveys/brief-from-qa", { label: "buildSurveyBriefFromQa", method: "POST", body: JSON.stringify(payload) }),
+  generateSurveyFromBrief: (payload: SurveyTopicGenerateRequest) =>
+    request<Survey>("/api/surveys/generate-from-brief", { label: "generateSurveyFromBrief", method: "POST", body: JSON.stringify(payload) }),
   generateSurveyFromTopic: (payload: SurveyTopicGenerateRequest) =>
     request<Survey>("/api/surveys/generate-from-topic", { label: "generateSurveyFromTopic", method: "POST", body: JSON.stringify(payload) }),
   updateSurvey: (surveyId: string, payload: SurveyUpdateRequest) =>

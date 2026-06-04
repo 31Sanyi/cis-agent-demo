@@ -613,11 +613,30 @@ export type SurveyUpdateRequest = {
 };
 
 export type SurveyTopicGenerateRequest = {
-  topic: string;
+  topic?: string;
   target_respondents?: string;
   research_goal?: string;
   requirements?: string;
   question_count?: number;
+  qa_messages?: SurveyBriefMessage[];
+  brief?: SurveyBrief | null;
+};
+
+export type SurveyBriefMessage = {
+  role: "assistant" | "user";
+  content: string;
+};
+
+export type SurveyBrief = {
+  research_topic: string;
+  product_or_category: string;
+  target_respondents: string;
+  research_goal: string;
+  pain_points: string[];
+  competitors?: string[];
+  requirements?: string;
+  question_count: number;
+  metadata?: Record<string, unknown>;
 };
 
 export type SurveyRevisionResponse = {
@@ -627,12 +646,42 @@ export type SurveyRevisionResponse = {
   added_questions: Array<{ question_id: string; reason: string }>;
 };
 
+export type SurveyDataQualityAssessment = {
+  raw_count: number;
+  clean_count: number;
+  removed_count: number;
+  valid_ratio: number;
+  quality_score: number;
+  quality_level: "high" | "medium" | "low" | "unusable";
+  can_enter_knowledge_base: boolean;
+  reasons: string[];
+  warnings: string[];
+  excluded_rows_summary: Array<Record<string, unknown>>;
+  cleaning_rules_applied: string[];
+};
+
+export type SurveyKnowledgeCandidate = {
+  title: string;
+  content: string;
+  evidence_type: string;
+  confidence: number;
+  sample_size: number;
+  clean_sample_size: number;
+  supporting_questions: string[];
+  related_pain_ids: string[];
+  related_claim_ids: string[];
+  limitations: string[];
+  should_write_to_kb: boolean;
+  rejection_reason?: string | null;
+};
+
 export type SurveyAnalysis = {
   analysis_id: string;
   survey_id: string;
   batch_id: string;
   summary: string;
   executive_summary?: string | null;
+  user_facing_summary?: string;
   sample_summary: Record<string, unknown>;
   key_findings: Array<Record<string, unknown>>;
   question_level_analysis: Array<Record<string, unknown>>;
@@ -642,7 +691,7 @@ export type SurveyAnalysis = {
   pain_point_ranking?: Array<Record<string, unknown>>;
   claim_validation_matrix?: Array<Record<string, unknown>>;
   segment_insights?: Array<Record<string, unknown>>;
-  competitor_switching_analysis?: Array<Record<string, unknown>>;
+  competitor_switching_analysis?: Array<Record<string, unknown>> | Record<string, unknown>;
   pricing_and_wtp_analysis?: Record<string, unknown> | null;
   recommended_report_revisions?: Array<Record<string, unknown>>;
   next_research_questions?: string[];
@@ -652,6 +701,9 @@ export type SurveyAnalysis = {
   question_summaries?: Array<Record<string, unknown>>;
   hypothesis_findings?: Array<Record<string, unknown>>;
   limitations?: string[];
+  data_quality_assessment?: SurveyDataQualityAssessment;
+  knowledge_candidates?: SurveyKnowledgeCandidate[];
+  cleaning_notes?: string[];
   dashboard_summary: string;
   created_at: string;
 };
@@ -672,6 +724,10 @@ export type SurveyUploadResponse = {
   hypothesis_findings?: Array<Record<string, unknown>>;
   overall_summary?: string;
   limitations?: string[];
+  data_quality_assessment?: SurveyDataQualityAssessment | null;
+  knowledge_candidates?: SurveyKnowledgeCandidate[];
+  user_facing_summary?: string;
+  cleaning_preview?: Array<Record<string, unknown>>;
 };
 
 export type SurveyPlannerContext = {

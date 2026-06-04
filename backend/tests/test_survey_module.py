@@ -1,6 +1,7 @@
 import json
 
-from app.schemas.survey import Survey, SurveyAddQuestionRequest, SurveyQuestionCreate, SurveyReorderRequest, SurveyReviseRequest, SurveyTopicGenerateRequest, SurveyUpdateRequest
+from app.agents.questionnaire_agent import QuestionnaireAgent
+from app.schemas.survey import Survey, SurveyAddQuestionRequest, SurveyBrief, SurveyQuestionCreate, SurveyReorderRequest, SurveyReviseRequest, SurveyTopicGenerateRequest, SurveyUpdateRequest
 from app.database import Base
 from app.db_models import TaskRecord, TaskRunRecord
 from app.schemas import Claim, QaResult, Report
@@ -8,6 +9,7 @@ from app.services.survey_demo_data import PHONE_DEMO_RESPONSE_CSV, PHONE_DEMO_SU
 from app.services.evidence_service import EvidenceService
 from app.services.report_service import ReportService
 from app.services.survey_llm_client import SurveyLLMConfigurationError
+from app.services.survey_response_cleaning_service import SurveyResponseCleaningService
 from app.services.survey_service import SurveyService
 from app.utils.csv_exporter import export_survey_template_csv
 from app.utils.csv_parser import SurveyCsvValidationError, infer_survey_from_csv, parse_survey_response_csv
@@ -103,9 +105,12 @@ def test_survey_schema_requires_unique_field_names():
 def test_export_survey_template_csv_uses_expected_header_and_pipe_options():
     csv_content = export_survey_template_csv(_survey())
 
-    assert csv_content.startswith("question_id,field_name,question_text,question_type,options,required,analysis_goal,related_claim_id")
+    assert csv_content.startswith(
+        "section_id,section_title,question_id,question_text,question_type,options,required"
+    )
     assert "经常|偶尔|从未" in csv_content
-    assert "claim_001" in csv_content
+    assert "单选题" in csv_content
+    assert "field_name" not in csv_content.splitlines()[0]
 
 
 def test_parse_survey_response_csv_stats_question_types():
@@ -123,6 +128,7 @@ def test_parse_survey_response_csv_stats_question_types():
     assert stats["questions"]["Q3"]["average"] == 4
     assert stats["questions"]["Q4"]["median"] == 35
     assert stats["questions"]["Q5"]["text_samples"] == ["体验不透明"]
+    assert len(stats["response_rows"]) == 3
 
 
 def test_parse_survey_response_csv_reports_missing_fields():
@@ -316,6 +322,9 @@ def test_phone_demo_revise_falls_back_without_survey_llm_key():
         assert upload_result.valid_count == 30
         assert upload_result.analysis.key_findings
         assert upload_result.analysis.survey_evidence["confidence"] > 0
+        assert upload_result.analysis.user_facing_summary
+        assert upload_result.analysis.data_quality_assessment.clean_count == 30
+        assert upload_result.evidence is None
         old_csv_upload_result = service.upload_and_analyze(saved.survey_id, "old_sample.csv", PHONE_DEMO_RESPONSE_CSV)
         assert old_csv_upload_result.valid_count == 30
         assert any(
@@ -324,6 +333,169 @@ def test_phone_demo_revise_falls_back_without_survey_llm_key():
         )
     finally:
         session.close()
+
+
+def test_build_brief_from_qa_extracts_topic_pain_points_and_goal():
+    service = SurveyService(sessionmaker(bind=create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}))())
+    brief = service.build_brief_from_qa(
+        SurveyTopicGenerateRequest(
+            qa_messages=[
+                {"role": "assistant", "content": "你想调研什么产品、服务、行业或使用场景？"},
+                {"role": "user", "content": "AI 学习工具在高校场景下的使用体验"},
+                {"role": "assistant", "content": "你目前怀疑或已经观察到哪些用户痛点？"},
+                {"role": "user", "content": "上手门槛高；价格偏高；内容质量不稳定"},
+                {"role": "assistant", "content": "你的目标受访者是谁？"},
+                {"role": "user", "content": "高校学生"},
+                {"role": "assistant", "content": "你希望问卷结果帮助你做什么决策？"},
+                {"role": "user", "content": "帮助我们做竞品分析和功能优先级判断"},
+                {"role": "assistant", "content": "有没有必须包含或必须避免的问题？"},
+                {"role": "user", "content": "避免收集手机号，最好控制在 10 题以内"},
+            ],
+            question_count=10,
+        )
+    )
+
+    assert brief.research_topic
+    assert brief.target_respondents == "高校学生"
+    assert brief.research_goal
+    assert len(brief.pain_points) >= 2
+
+
+def test_generate_from_topic_supports_legacy_topic_and_brief_payloads():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    session = sessionmaker(bind=engine)()
+    service = SurveyService(session)
+
+    legacy = service.generate_from_topic(
+        SurveyTopicGenerateRequest(
+            topic="企业协同工具",
+            target_respondents="团队负责人",
+            research_goal="验证购买与切换因素",
+            question_count=8,
+        )
+    )
+    brief = service.generate_from_topic(
+        SurveyTopicGenerateRequest(
+            brief=SurveyBrief(
+                research_topic="企业协同工具",
+                product_or_category="企业协同工具",
+                target_respondents="团队负责人",
+                research_goal="验证用户痛点和竞品切换风险",
+                pain_points=["协作消息过载", "项目视图不清晰"],
+                question_count=8,
+            )
+        )
+    )
+
+    assert legacy.questions
+    assert brief.questions
+    assert legacy.metadata["source"] in {"topic_generation", "brief_generation"}
+    assert brief.metadata["source"] in {"topic_generation", "brief_generation"}
+
+
+def test_generate_with_self_review_retries_up_to_three_rounds():
+    class StubQuestionnaireAgent(QuestionnaireAgent):
+        def __init__(self):
+            super().__init__(llm_client=None)
+            self.review_calls = 0
+            self.revise_calls = 0
+
+        def generate_survey(self, context):
+            return {
+                "survey_title": "test",
+                "survey_description": "test",
+                "target_respondents": "users",
+                "research_goal": "goal",
+                "pain_points": [{"pain_id": "P1", "pain_point": "价格不透明"}],
+                "questions": [],
+                "metadata": {},
+            }
+
+        def review_survey(self, survey_json, context):
+            self.review_calls += 1
+            return {
+                "passed": self.review_calls >= 3,
+                "score": 40 if self.review_calls < 3 else 88,
+                "issues": [] if self.review_calls >= 3 else [{"severity": "high", "issue": "missing", "suggestion": "fix"}],
+                "rewrite_instruction": "补齐问题",
+            }
+
+        def revise_survey_by_review(self, survey_json, review_result, context):
+            self.revise_calls += 1
+            survey_json = dict(survey_json)
+            survey_json.setdefault("metadata", {})
+            survey_json["metadata"]["revise_calls"] = self.revise_calls
+            return survey_json
+
+    agent = StubQuestionnaireAgent()
+    result = agent.generate_with_self_review({"pain_points": [{"pain_id": "P1", "pain_point": "价格不透明"}]}, max_review_rounds=3)
+
+    assert agent.review_calls == 3
+    assert agent.revise_calls == 2
+    assert result["metadata"]["self_review_passed"] is True
+    assert result["metadata"]["self_review_rounds"] == 3
+
+
+def test_generated_survey_metadata_contains_self_review_fields_and_non_background_mapping():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    session = sessionmaker(bind=engine)()
+    service = SurveyService(session)
+
+    survey = service.generate_from_topic(
+        SurveyTopicGenerateRequest(
+            brief=SurveyBrief(
+                research_topic="视频会议工具",
+                product_or_category="视频会议工具",
+                target_respondents="远程团队成员",
+                research_goal="验证核心体验痛点",
+                pain_points=["音视频不稳定", "会议记录难复盘"],
+                question_count=9,
+            )
+        )
+    )
+
+    assert "self_review_passed" in survey.metadata
+    assert "self_review_rounds" in survey.metadata
+    assert "review_result" in survey.metadata
+    non_background_questions = [question for question in survey.questions if question.metric_role not in {"background", None}]
+    assert non_background_questions
+    assert all(question.maps_to_pain_id or question.metric_role == "open_feedback" for question in non_background_questions)
+
+
+def test_revise_can_add_non_empty_question_without_overwriting_existing_questions():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    session = sessionmaker(bind=engine)()
+    service = SurveyService(session)
+    survey = service.generate_from_topic(
+        SurveyTopicGenerateRequest(
+            brief=SurveyBrief(
+                research_topic="外卖服务",
+                product_or_category="外卖服务",
+                target_respondents="高频下单用户",
+                research_goal="验证痛点与留存影响",
+                pain_points=["配送费偏高", "送达时间不稳定"],
+                question_count=8,
+            )
+        )
+    )
+
+    original_count = len(survey.questions)
+    result = service.revise(
+        survey.survey_id,
+        SurveyReviseRequest(
+            revision_request="请基于当前问卷、目标用户和痛点，新增 1 道高质量问题。不要修改已有问题。",
+        ),
+    )
+
+    assert len(result.survey.questions) >= original_count + 1
+    latest_question = result.survey.questions[-1]
+    assert latest_question.question_text.strip()
+    assert latest_question.question_type in {"single_choice", "multiple_choice", "rating", "text", "number"}
+    if latest_question.question_type in {"single_choice", "multiple_choice", "rating"}:
+        assert latest_question.options
 
 
 def test_upload_mismatched_csv_becomes_ad_hoc_survey_with_generic_fallback():
@@ -362,11 +534,14 @@ Xiaomi,价格,3999,系统弹窗太多
         assert result.valid_count == 3
         assert result.analysis.survey_evidence["metadata"]["analysis_mode"] == "ad_hoc_csv"
         assert result.analysis.question_level_analysis
+        assert result.analysis.data_quality_assessment.clean_count == 3
+        assert result.analysis.user_facing_summary
+        assert result.knowledge_candidates is not None
     finally:
         session.close()
 
 
-def test_task_level_survey_flow_uses_planner_inputs_and_creates_survey_evidence():
+def test_task_level_survey_flow_uses_planner_inputs_and_returns_cleaned_survey_summary():
     class MissingKeyQuestionnaireAgent:
         def generate_survey(self, context):
             raise SurveyLLMConfigurationError("SURVEY_LLM_API_KEY is not configured")
@@ -422,11 +597,66 @@ def test_task_level_survey_flow_uses_planner_inputs_and_creates_survey_evidence(
         assert result.question_summaries
         assert result.hypothesis_findings
         assert result.survey_evidence
-        assert result.evidence
-        assert result.evidence["source_type"] == "survey"
-        assert result.evidence["local_ref"] == f"survey://{survey.survey_id}"
+        assert result.evidence is None
+        assert result.data_quality_assessment is not None
+        assert result.user_facing_summary
+        assert result.knowledge_candidates is not None
         saved_evidence = EvidenceService(session).list_for_task("task_planner", run_id=survey.run_id)
-        assert any(item.source_type == "survey" for item in saved_evidence)
+        assert not any(item.source_type == "survey" for item in saved_evidence)
+    finally:
+        session.close()
+
+
+def test_cleaning_service_excludes_duplicates_and_low_info_rows():
+    survey = _survey()
+    csv_content = """respondent_id,seat_lock_experience,feature_importance,satisfaction_score,pay_amount,open_feedback
+r1,经常,价格|体验,5,50,test
+r1,经常,价格|体验,5,50,test
+r2,,,,,   
+r3,偶尔,服务,3,20,不知道
+r4,经常,体验,4,60,希望改善价格透明度
+"""
+    raw_stats = parse_survey_response_csv(csv_content, survey)
+
+    result = SurveyResponseCleaningService().clean(survey, raw_stats)
+
+    assert result.data_quality.raw_count == 5
+    assert result.data_quality.clean_count == 3
+    assert result.data_quality.removed_count == 2
+    assert result.data_quality.can_enter_knowledge_base is False
+    assert any("blank_response" in item["reasons"] for item in result.data_quality.excluded_rows_summary)
+    assert any("duplicate_respondent_id" in item["reasons"] or "duplicate_response_pattern" in item["reasons"] for item in result.data_quality.excluded_rows_summary)
+
+
+def test_low_quality_upload_blocks_kb_candidates_and_returns_cleaning_fields():
+    class MissingKeyAnalysisAgent:
+        def analyze(self, survey_json, survey_stats_json, report_context):
+            raise SurveyLLMConfigurationError("SURVEY_LLM_API_KEY is not configured")
+
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    session = sessionmaker(bind=engine)()
+    try:
+        service = SurveyService(session, analysis_agent=MissingKeyAnalysisAgent())
+        saved = service.save_survey(_survey())
+        csv_content = """respondent_id,seat_lock_experience,feature_importance,satisfaction_score,pay_amount,open_feedback
+r1,经常,价格|体验,5,50,test
+r1,经常,价格|体验,5,50,test
+r2,,,,,
+r3,偶尔,服务,3,20,不知道
+r4,经常,体验,4,60,asdf
+"""
+        result = service.upload_and_analyze(saved.survey_id, "low_quality.csv", csv_content)
+
+        assert result.data_quality_assessment is not None
+        assert result.data_quality_assessment.clean_count < 10
+        assert result.data_quality_assessment.can_enter_knowledge_base is False
+        assert result.user_facing_summary
+        assert result.cleaning_preview
+        assert result.analysis.knowledge_candidates
+        assert all(candidate.should_write_to_kb is False for candidate in result.analysis.knowledge_candidates)
+        assert all(candidate.rejection_reason for candidate in result.analysis.knowledge_candidates)
+        assert result.evidence is None
     finally:
         session.close()
 

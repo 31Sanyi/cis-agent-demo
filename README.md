@@ -149,7 +149,7 @@ npm run build
 - 展示 Run History，支持切换历史运行并回放对应 Evidence、Report、QA 和 Trace
 - 点击报告 Claim 后查看对应 Evidence
 - Trace Viewer 支持按 Agent 过滤
-- 独立的问卷分析工作台，支持按话题生成问卷、按任务/Run 生成问卷、手工改题、导出模板、上传反馈并查看分析结果
+- 独立的问卷分析工作台，支持问答式生成问卷、按任务/Run 生成问卷、AI 补充新问题、手工改题、导出完整问卷 CSV、导出答卷模板、上传反馈并查看分析结果
 - Survey 模块支持痛点验证型问卷设计、多格式反馈导入，以及 SurveyEvidence -> Evidence 标准转换
 
 ## 问卷工作台
@@ -159,7 +159,9 @@ npm run build
 主要能力：
 
 - 从任务最新 Run 的 Planner / Report 快照生成痛点验证型问卷
-- 从任意 topic 直接生成独立问卷
+- 通过问答式调研需求收集整理 `SurveyBrief`，再生成独立问卷
+- 支持在现有问卷上通过 AI 生成新问题，也支持手动添加空白题
+- 默认导出完整问卷 CSV；答卷填写模板使用单独按钮导出
 - 支持 CSV / XLSX / JSON / TXT / Markdown 反馈导入
 - 自动生成 `pain_point_validation`、`claim_validation_matrix`、`recommended_report_revisions`
 - 上传后会生成 `SurveyEvidence`，并同步转成标准 `Evidence(source_type=\"survey\")`

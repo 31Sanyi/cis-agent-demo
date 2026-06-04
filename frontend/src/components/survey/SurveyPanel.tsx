@@ -1,7 +1,18 @@
 import { ArrowDown, ArrowUp, Download, FileUp, Plus, RefreshCw, Save, Sparkles, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../../api/client";
-import type { Report, Survey, SurveyAnalysis, SurveyMetricRole, SurveyPlannerContext, SurveyQuestion, SurveyUploadResponse, Task } from "../../api/types";
+import type {
+  Report,
+  Survey,
+  SurveyAnalysis,
+  SurveyBrief,
+  SurveyBriefMessage,
+  SurveyMetricRole,
+  SurveyPlannerContext,
+  SurveyQuestion,
+  SurveyUploadResponse,
+  Task
+} from "../../api/types";
 import { Pill } from "../../types";
 
 type SurveyPanelProps = {
@@ -11,7 +22,9 @@ type SurveyPanelProps = {
   plannerContext?: SurveyPlannerContext["planner_context"];
 };
 
-type PanelState = "idle" | "generating" | "ready" | "saving" | "revising" | "exporting" | "uploading" | "analyzed" | "error";
+type PanelState = "idle" | "generating" | "ready" | "saving" | "revising" | "adding_ai_question" | "exporting" | "uploading" | "analyzed" | "error";
+type BriefState = "answering" | "preview" | "generating";
+type CsvPreviewMode = "survey" | "response_template";
 
 const feedbackAccept = ".csv,.xlsx,.json,.txt,.md,text/csv,application/json,text/plain,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
@@ -28,22 +41,46 @@ const metricRoleOptions: SurveyMetricRole[] = [
   "open_feedback"
 ];
 
+const questionTypeLabels: Record<SurveyQuestion["question_type"], string> = {
+  single_choice: "单选题",
+  multiple_choice: "多选题",
+  rating: "评分题",
+  text: "开放题",
+  number: "数字题"
+};
+
+const briefQuestions = [
+  "你想调研什么产品、服务、行业或使用场景？",
+  "你目前怀疑或已经观察到哪些用户痛点？",
+  "你的目标受访者是谁？",
+  "你希望问卷结果帮助你做什么决策？例如竞品分析、产品改进、定价、功能优先级。",
+  "有没有必须包含或必须避免的问题？"
+];
+
+function createInitialBriefMessages(): SurveyBriefMessage[] {
+  return [{ role: "assistant", content: briefQuestions[0] }];
+}
+
 export function SurveyPanel({ task, runId, report, plannerContext }: SurveyPanelProps) {
   const [survey, setSurvey] = useState<Survey>();
   const [analysis, setAnalysis] = useState<SurveyAnalysis>();
   const [uploadResult, setUploadResult] = useState<SurveyUploadResponse>();
   const [requirements, setRequirements] = useState("");
-  const [topic, setTopic] = useState("");
-  const [topicTargetRespondents, setTopicTargetRespondents] = useState("");
-  const [topicResearchGoal, setTopicResearchGoal] = useState("");
-  const [topicRequirements, setTopicRequirements] = useState("");
   const [topicQuestionCount, setTopicQuestionCount] = useState(10);
+  const [briefMessages, setBriefMessages] = useState<SurveyBriefMessage[]>(createInitialBriefMessages);
+  const [briefAnswers, setBriefAnswers] = useState<string[]>([]);
+  const [currentBriefAnswer, setCurrentBriefAnswer] = useState("");
+  const [brief, setBrief] = useState<SurveyBrief | null>(null);
+  const [briefStep, setBriefStep] = useState(0);
+  const [briefState, setBriefState] = useState<BriefState>("answering");
   const [revisionRequest, setRevisionRequest] = useState("");
   const [revisionSummary, setRevisionSummary] = useState("");
   const [csvPreview, setCsvPreview] = useState("");
+  const [csvPreviewMode, setCsvPreviewMode] = useState<CsvPreviewMode>("survey");
   const [exportMessage, setExportMessage] = useState("");
   const [state, setState] = useState<PanelState>("idle");
   const [error, setError] = useState("");
+  const [advancedEditorByQuestion, setAdvancedEditorByQuestion] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     setSurvey(undefined);
@@ -70,6 +107,47 @@ export function SurveyPanel({ task, runId, report, plannerContext }: SurveyPanel
     report_markdown: report?.markdown ?? "",
     claims_json: report?.claims ?? []
   }), [report]);
+
+  function resetBriefFlow() {
+    setBriefMessages(createInitialBriefMessages());
+    setBriefAnswers([]);
+    setCurrentBriefAnswer("");
+    setBrief(null);
+    setBriefStep(0);
+    setBriefState("answering");
+  }
+
+  function answerBriefQuestion() {
+    const answer = currentBriefAnswer.trim();
+    if (!answer || briefStep >= briefQuestions.length) return;
+    const nextAnswers = [...briefAnswers, answer];
+    const nextMessages: SurveyBriefMessage[] = [...briefMessages, { role: "user", content: answer }];
+    if (briefStep + 1 < briefQuestions.length) {
+      nextMessages.push({ role: "assistant", content: briefQuestions[briefStep + 1] });
+    }
+    setBriefAnswers(nextAnswers);
+    setBriefMessages(nextMessages);
+    setCurrentBriefAnswer("");
+    setBriefStep((step) => step + 1);
+  }
+
+  async function buildBrief() {
+    if (briefAnswers.length < briefQuestions.length) return;
+    setBriefState("generating");
+    setError("");
+    try {
+      const nextBrief = await api.buildSurveyBriefFromQa({
+        qa_messages: briefMessages,
+        question_count: topicQuestionCount
+      });
+      setBrief(nextBrief);
+      setBriefState("preview");
+    } catch (err) {
+      setError(formatSurveyError(err));
+      setBriefState("answering");
+      setState("error");
+    }
+  }
 
   async function generate() {
     if (!task) return;
@@ -99,18 +177,13 @@ export function SurveyPanel({ task, runId, report, plannerContext }: SurveyPanel
     }
   }
 
-  async function generateFromTopic() {
-    if (!topic.trim()) return;
+  async function generateFromBrief() {
+    if (!brief) return;
     setState("generating");
+    setBriefState("generating");
     setError("");
     try {
-      const nextSurvey = await api.generateSurveyFromTopic({
-        topic: topic.trim(),
-        target_respondents: topicTargetRespondents,
-        research_goal: topicResearchGoal,
-        requirements: topicRequirements,
-        question_count: topicQuestionCount
-      });
+      const nextSurvey = await api.generateSurveyFromBrief({ brief });
       setSurvey(nextSurvey);
       setAnalysis(undefined);
       setUploadResult(undefined);
@@ -118,9 +191,11 @@ export function SurveyPanel({ task, runId, report, plannerContext }: SurveyPanel
       setExportMessage("");
       setRevisionSummary("");
       setState("ready");
+      setBriefState("preview");
     } catch (err) {
       setError(formatSurveyError(err));
       setState("error");
+      setBriefState("preview");
     }
   }
 
@@ -191,6 +266,30 @@ export function SurveyPanel({ task, runId, report, plannerContext }: SurveyPanel
     }
   }
 
+  async function addAiQuestion() {
+    if (!survey) return;
+    setState("adding_ai_question");
+    setError("");
+    try {
+      const baseInstruction = "请基于当前问卷、目标用户和痛点，新增 1 道高质量问题。不要修改已有问题。新增问题必须包含 question_text、question_type、options、required，并尽量绑定到尚未充分覆盖的痛点或问卷目标。";
+      const extraInstruction = revisionRequest.trim();
+      const result = await api.reviseSurvey(survey.survey_id, {
+        revision_request: extraInstruction ? `${baseInstruction} 补充要求：${extraInstruction}` : baseInstruction,
+        report_context: reportContext
+      });
+      setSurvey(result.survey);
+      setAnalysis(undefined);
+      setUploadResult(undefined);
+      setCsvPreview("");
+      setExportMessage("已根据当前问卷上下文生成新问题，你可以继续编辑、调整顺序或删除。");
+      setRevisionSummary(result.revision_summary);
+      setState("ready");
+    } catch (err) {
+      setError("问题生成失败，请稍后重试，或使用手动添加空白题。");
+      setState("error");
+    }
+  }
+
   async function deleteQuestion(questionId: string) {
     if (!survey) return;
     setState("saving");
@@ -237,10 +336,7 @@ export function SurveyPanel({ task, runId, report, plannerContext }: SurveyPanel
         revision_request: revisionRequest,
         report_context: reportContext
       });
-      const refreshedSurvey = task && runId
-        ? await api.runSurvey(task.task_id, runId).catch(() => result.survey)
-        : result.survey;
-      setSurvey(refreshedSurvey);
+      setSurvey(result.survey);
       setAnalysis(undefined);
       setUploadResult(undefined);
       setCsvPreview("");
@@ -259,10 +355,30 @@ export function SurveyPanel({ task, runId, report, plannerContext }: SurveyPanel
     setState("exporting");
     setError("");
     try {
-      const csvText = task ? await api.exportTaskSurveyCsv(task.task_id) : await api.exportSurveyResponseTemplateCsv(survey.survey_id);
+      const csvText = task ? await api.exportTaskSurveyCsv(task.task_id) : await api.exportSurveyCsv(survey.survey_id);
       setCsvPreview(csvText.replace(/^\uFEFF/, ""));
-      setExportMessage("CSV 答卷模板已生成。第一行是匿名 respondent_id 和各问题字段，可填写后再上传分析。");
+      setCsvPreviewMode("survey");
+      setExportMessage("完整问卷 CSV 已生成。每一行是一道题，包含题目、题型、选项和是否必填。");
       triggerCsvDownload(csvText, `${survey.survey_id}.csv`);
+      setState(analysis ? "analyzed" : "ready");
+    } catch (err) {
+      setError(formatSurveyError(err));
+      setState("error");
+    }
+  }
+
+  async function exportResponseTemplateCsv() {
+    if (!survey) return;
+    setState("exporting");
+    setError("");
+    try {
+      const csvText = task
+        ? await api.exportTaskSurveyResponseTemplateCsv(task.task_id)
+        : await api.exportSurveyResponseTemplateCsv(survey.survey_id);
+      setCsvPreview(csvText.replace(/^\uFEFF/, ""));
+      setCsvPreviewMode("response_template");
+      setExportMessage("答卷模板 CSV 已生成。第一行是匿名 respondent_id 和各问题字段，可填写后再上传分析。");
+      triggerCsvDownload(csvText, `${survey.survey_id}_response_template.csv`);
       setState(analysis ? "analyzed" : "ready");
     } catch (err) {
       setError(formatSurveyError(err));
@@ -350,6 +466,32 @@ export function SurveyPanel({ task, runId, report, plannerContext }: SurveyPanel
     });
   }
 
+  function toggleAdvancedEditor(questionId: string) {
+    setAdvancedEditorByQuestion((current) => ({
+      ...current,
+      [questionId]: !current[questionId]
+    }));
+  }
+
+  const selfReviewResult = survey?.metadata?.review_result as Record<string, unknown> | undefined;
+  const selfReviewIssues = Array.isArray(selfReviewResult?.issues) ? selfReviewResult?.issues as Array<Record<string, unknown>> : [];
+  const dataQuality = analysis?.data_quality_assessment ?? uploadResult?.data_quality_assessment;
+  const knowledgeCandidates = Array.isArray(analysis?.knowledge_candidates)
+    ? analysis?.knowledge_candidates
+    : Array.isArray(uploadResult?.knowledge_candidates)
+      ? uploadResult?.knowledge_candidates
+      : [];
+  const userFacingSummary = buildOverallAnalysisSummary(
+    analysis,
+    uploadResult,
+    dataQuality
+  );
+  const competitorSwitchingItems = Array.isArray(analysis?.competitor_switching_analysis)
+    ? analysis.competitor_switching_analysis
+    : analysis?.competitor_switching_analysis && typeof analysis.competitor_switching_analysis === "object"
+      ? [analysis.competitor_switching_analysis]
+      : [];
+
   return (
     <section className="rounded border border-line bg-white p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -364,55 +506,126 @@ export function SurveyPanel({ task, runId, report, plannerContext }: SurveyPanel
       </div>
 
       <div className="mb-4 rounded border border-line bg-panel p-3">
-        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
           <div>
-            <div className="font-semibold">按话题生成问卷</div>
-            <p className="mt-1 text-sm text-slate-600">不依赖任务或报告，可直接输入任意研究主题生成问卷。</p>
+            <div className="font-semibold">问答式调研需求收集</div>
+            <p className="mt-1 text-sm text-slate-600">用逐步问答替换旧的固定 topic 表单。系统会先整理 Survey Brief，再由你确认生成问卷。</p>
           </div>
-          <button
-            type="button"
-            onClick={generateFromTopic}
-            disabled={state === "generating" || !topic.trim()}
-            className="inline-flex items-center gap-2 rounded bg-accent px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
-          >
-            <Sparkles size={16} /> {state === "generating" ? "生成中..." : "生成话题问卷"}
-          </button>
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-slate-500">
+              建议题量
+              <input
+                type="number"
+                min={1}
+                max={30}
+                value={topicQuestionCount}
+                onChange={(event) => setTopicQuestionCount(Number(event.target.value))}
+                className="ml-2 w-20 rounded border border-line px-2 py-1 text-sm"
+              />
+            </label>
+            <button
+              type="button"
+              onClick={resetBriefFlow}
+              className="rounded border border-line bg-white px-3 py-2 text-sm font-semibold"
+            >
+              重新回答
+            </button>
+          </div>
         </div>
-        <div className="grid gap-2 md:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_120px]">
-          <input
-            value={topic}
-            onChange={(event) => setTopic(event.target.value)}
-            className="rounded border border-line px-3 py-2 text-sm"
-            placeholder="例如：高校学生对 AI 学习工具的使用与付费意愿"
-          />
-          <input
-            value={topicTargetRespondents}
-            onChange={(event) => setTopicTargetRespondents(event.target.value)}
-            className="rounded border border-line px-3 py-2 text-sm"
-            placeholder="目标受访者"
-          />
-          <input
-            type="number"
-            min={1}
-            max={30}
-            value={topicQuestionCount}
-            onChange={(event) => setTopicQuestionCount(Number(event.target.value))}
-            className="rounded border border-line px-3 py-2 text-sm"
-          />
-        </div>
-        <div className="mt-2 grid gap-2 md:grid-cols-2">
-          <input
-            value={topicResearchGoal}
-            onChange={(event) => setTopicResearchGoal(event.target.value)}
-            className="rounded border border-line px-3 py-2 text-sm"
-            placeholder="研究目标"
-          />
-          <input
-            value={topicRequirements}
-            onChange={(event) => setTopicRequirements(event.target.value)}
-            className="rounded border border-line px-3 py-2 text-sm"
-            placeholder="额外要求"
-          />
+
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
+          <div className="rounded border border-line bg-white p-3">
+            <div className="mb-2 text-sm font-semibold">问答记录</div>
+            <div className="space-y-2">
+              {briefMessages.map((message, index) => (
+                <div
+                  key={`${message.role}-${index}`}
+                  className={message.role === "assistant"
+                    ? "rounded bg-slate-100 px-3 py-2 text-sm text-slate-700"
+                    : "rounded bg-accent/10 px-3 py-2 text-sm text-slate-800"}
+                >
+                  <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    {message.role === "assistant" ? "系统问题" : "你的回答"}
+                  </div>
+                  <div>{message.content}</div>
+                </div>
+              ))}
+            </div>
+
+            {briefState === "answering" && briefStep < briefQuestions.length && (
+              <div className="mt-3 grid gap-2">
+                <textarea
+                  value={currentBriefAnswer}
+                  onChange={(event) => setCurrentBriefAnswer(event.target.value)}
+                  className="min-h-24 rounded border border-line px-3 py-2 text-sm"
+                  placeholder="输入你的回答，系统会继续追问并整理为调研 brief"
+                />
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={answerBriefQuestion}
+                    disabled={!currentBriefAnswer.trim()}
+                    className="inline-flex items-center gap-2 rounded bg-accent px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                  >
+                    下一步
+                  </button>
+                  <button
+                    type="button"
+                    onClick={buildBrief}
+                    disabled={briefAnswers.length < briefQuestions.length}
+                    className="inline-flex items-center gap-2 rounded border border-line bg-white px-3 py-2 text-sm font-semibold disabled:opacity-50"
+                  >
+                    生成调研 Brief
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="rounded border border-line bg-white p-3">
+            <div className="mb-2 text-sm font-semibold">Brief 预览</div>
+            {!brief && (
+              <div className="rounded bg-panel px-3 py-4 text-sm text-slate-600">
+                完成全部问答后，系统会在这里整理 research topic、目标受访者、痛点列表、研究目标和约束条件。
+              </div>
+            )}
+            {brief && (
+              <div className="grid gap-3 text-sm">
+                <BriefRow label="研究主题" value={brief.research_topic} />
+                <BriefRow label="产品 / 场景" value={brief.product_or_category} />
+                <BriefRow label="目标受访者" value={brief.target_respondents} />
+                <BriefRow label="研究目标" value={brief.research_goal} />
+                <BriefRow label="额外要求" value={brief.requirements || "-"} />
+                <BriefRow label="建议题量" value={String(brief.question_count)} />
+                {!!brief.competitors?.length && <BriefRow label="竞品 / 替代方案" value={brief.competitors.join("、")} />}
+                <div>
+                  <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">痛点列表</div>
+                  <div className="flex flex-wrap gap-2">
+                    {brief.pain_points.map((painPoint) => (
+                      <span key={painPoint} className="rounded bg-slate-100 px-2 py-1 text-xs text-slate-700">{painPoint}</span>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={generateFromBrief}
+                    disabled={state === "generating" || briefState === "generating"}
+                    className="inline-flex items-center gap-2 rounded bg-accent px-3 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                  >
+                    <Sparkles size={16} /> {briefState === "generating" ? "生成中..." : "确认 Brief 并生成问卷"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetBriefFlow}
+                    className="rounded border border-line bg-white px-3 py-2 text-sm font-semibold"
+                  >
+                    重新回答
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -520,13 +733,52 @@ export function SurveyPanel({ task, runId, report, plannerContext }: SurveyPanel
               </button>
               <button
                 type="button"
-                onClick={addQuestion}
-                disabled={state === "saving"}
+                onClick={addAiQuestion}
+                disabled={state === "adding_ai_question" || state === "saving"}
                 className="inline-flex items-center gap-2 rounded border border-line bg-white px-3 py-2 text-sm font-semibold disabled:opacity-50"
               >
-                <Plus size={16} /> 新增题目
+                <Sparkles size={16} /> {state === "adding_ai_question" ? "正在生成问题..." : "AI 生成新问题"}
+              </button>
+              <button
+                type="button"
+                onClick={addQuestion}
+                disabled={state === "saving" || state === "adding_ai_question"}
+                className="inline-flex items-center gap-2 rounded border border-line bg-white px-3 py-2 text-sm font-semibold disabled:opacity-50"
+              >
+                <Plus size={16} /> 手动添加空白题
               </button>
             </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="rounded border border-line p-3 text-sm">
+              <div className="font-semibold">系统自审</div>
+              <div className="mt-2 grid gap-1 text-slate-700">
+                <span>通过：{survey.metadata?.self_review_passed ? "是" : "否"}</span>
+                <span>轮次：{String(survey.metadata?.self_review_rounds ?? "-")}</span>
+                <span>评分：{String(selfReviewResult?.score ?? "-")}</span>
+              </div>
+              {!!selfReviewIssues.length && (
+                <div className="mt-2 space-y-2">
+                  {selfReviewIssues.slice(0, 4).map((issue, index) => (
+                    <div key={index} className="rounded bg-panel px-3 py-2 text-xs text-slate-700">
+                      <div className="font-semibold">{String(issue.severity ?? "issue")} · {String(issue.issue ?? "")}</div>
+                      <div className="mt-1">{String(issue.suggestion ?? "")}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            {Boolean(survey.metadata?.brief) && (
+              <div className="rounded border border-line p-3 text-sm">
+                <div className="font-semibold">生成 Brief</div>
+                <div className="mt-2 grid gap-1 text-slate-700">
+                  <span>主题：{String((survey.metadata.brief as Record<string, unknown>).research_topic ?? "-")}</span>
+                  <span>受访者：{String((survey.metadata.brief as Record<string, unknown>).target_respondents ?? "-")}</span>
+                  <span>目标：{String((survey.metadata.brief as Record<string, unknown>).research_goal ?? "-")}</span>
+                </div>
+              </div>
+            )}
           </div>
 
           {!!survey.pain_points.length && (
@@ -553,11 +805,6 @@ export function SurveyPanel({ task, runId, report, plannerContext }: SurveyPanel
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-semibold">{question.question_id}</span>
-                    <input
-                      value={question.field_name}
-                      onChange={(event) => updateQuestionDraft(question.question_id, { field_name: event.target.value })}
-                      className="w-56 rounded border border-line px-2 py-1 text-xs"
-                    />
                     <label className="inline-flex items-center gap-1 text-xs text-slate-600">
                       <input
                         type="checkbox"
@@ -608,11 +855,11 @@ export function SurveyPanel({ task, runId, report, plannerContext }: SurveyPanel
                     onChange={(event) => updateQuestionDraft(question.question_id, { question_type: event.target.value as SurveyQuestion["question_type"] })}
                     className="h-10 rounded border border-line px-3 py-2 text-sm"
                   >
-                    <option value="single_choice">single_choice</option>
-                    <option value="multiple_choice">multiple_choice</option>
-                    <option value="rating">rating</option>
-                    <option value="text">text</option>
-                    <option value="number">number</option>
+                    <option value="single_choice">{questionTypeLabels.single_choice}</option>
+                    <option value="multiple_choice">{questionTypeLabels.multiple_choice}</option>
+                    <option value="rating">{questionTypeLabels.rating}</option>
+                    <option value="text">{questionTypeLabels.text}</option>
+                    <option value="number">{questionTypeLabels.number}</option>
                   </select>
                 </div>
                 {(question.question_type === "single_choice" || question.question_type === "multiple_choice" || question.question_type === "rating") && (
@@ -623,67 +870,88 @@ export function SurveyPanel({ task, runId, report, plannerContext }: SurveyPanel
                     placeholder="每行一个选项"
                   />
                 )}
-                <div className="mt-2 grid gap-2 md:grid-cols-3">
-                  <select
-                    value={question.maps_to_pain_id ?? ""}
-                    onChange={(event) => updateQuestionDraft(question.question_id, { maps_to_pain_id: event.target.value || null })}
-                    className="rounded border border-line px-3 py-2 text-sm"
-                  >
-                    <option value="">不绑定痛点</option>
-                    {survey.pain_points.map((painPoint) => (
-                      <option key={painPoint.pain_id} value={painPoint.pain_id}>
-                        {painPoint.pain_id} · {painPoint.pain_point}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    value={question.metric_role ?? ""}
-                    onChange={(event) => updateQuestionDraft(question.question_id, { metric_role: (event.target.value || null) as SurveyMetricRole | null })}
-                    className="rounded border border-line px-3 py-2 text-sm"
-                  >
-                    <option value="">指标角色</option>
-                    {metricRoleOptions.map((role) => (
-                      <option key={role} value={role}>{role}</option>
-                    ))}
-                  </select>
-                  <input
-                    value={question.research_purpose ?? ""}
-                    onChange={(event) => updateQuestionDraft(question.question_id, { research_purpose: event.target.value })}
-                    className="rounded border border-line px-3 py-2 text-sm"
-                    placeholder="研究用途"
-                  />
-                </div>
-                <input
-                  value={question.analysis_method ?? ""}
-                  onChange={(event) => updateQuestionDraft(question.question_id, { analysis_method: event.target.value })}
-                  className="mt-2 w-full rounded border border-line px-3 py-2 text-sm"
-                  placeholder="分析方法"
-                />
-                <div className="mt-2 grid gap-2 md:grid-cols-3">
-                  <input
-                    value={question.analysis_goal}
-                    onChange={(event) => updateQuestionDraft(question.question_id, { analysis_goal: event.target.value })}
-                    className="rounded border border-line px-3 py-2 text-sm"
-                    placeholder="分析目的"
-                  />
-                  <input
-                    value={question.theme ?? ""}
-                    onChange={(event) => updateQuestionDraft(question.question_id, { theme: event.target.value })}
-                    className="rounded border border-line px-3 py-2 text-sm"
-                    placeholder="主题"
-                  />
-                  <input
-                    value={question.hypothesis ?? ""}
-                    onChange={(event) => updateQuestionDraft(question.question_id, { hypothesis: event.target.value })}
-                    className="rounded border border-line px-3 py-2 text-sm"
-                    placeholder="假设"
-                  />
+                <div className="mt-2 rounded border border-line bg-panel px-3 py-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="text-sm font-semibold text-slate-700">高级分析字段</div>
+                      {renderAdvancedFieldSummary(question, survey.pain_points)}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => toggleAdvancedEditor(question.question_id)}
+                      className="rounded border border-line bg-white px-3 py-1.5 text-xs font-semibold text-slate-700"
+                    >
+                      {advancedEditorByQuestion[question.question_id] ? "收起高级字段" : "补充 / 编辑高级字段"}
+                    </button>
+                  </div>
+                  {advancedEditorByQuestion[question.question_id] && (
+                    <div className="mt-3 grid gap-2 md:grid-cols-3">
+                      <input
+                        value={question.field_name}
+                        onChange={(event) => updateQuestionDraft(question.question_id, { field_name: event.target.value })}
+                        className="rounded border border-line px-3 py-2 text-sm"
+                        placeholder="field_name"
+                      />
+                      <select
+                        value={question.maps_to_pain_id ?? ""}
+                        onChange={(event) => updateQuestionDraft(question.question_id, { maps_to_pain_id: event.target.value || null })}
+                        className="rounded border border-line px-3 py-2 text-sm"
+                      >
+                        <option value="">不绑定痛点</option>
+                        {survey.pain_points.map((painPoint) => (
+                          <option key={painPoint.pain_id} value={painPoint.pain_id}>
+                            {painPoint.pain_id} · {painPoint.pain_point}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        value={question.metric_role ?? ""}
+                        onChange={(event) => updateQuestionDraft(question.question_id, { metric_role: (event.target.value || null) as SurveyMetricRole | null })}
+                        className="rounded border border-line px-3 py-2 text-sm"
+                      >
+                        <option value="">指标角色</option>
+                        {metricRoleOptions.map((role) => (
+                          <option key={role} value={role}>{role}</option>
+                        ))}
+                      </select>
+                      <input
+                        value={question.research_purpose ?? ""}
+                        onChange={(event) => updateQuestionDraft(question.question_id, { research_purpose: event.target.value })}
+                        className="rounded border border-line px-3 py-2 text-sm"
+                        placeholder="研究用途"
+                      />
+                      <input
+                        value={question.analysis_method ?? ""}
+                        onChange={(event) => updateQuestionDraft(question.question_id, { analysis_method: event.target.value })}
+                        className="rounded border border-line px-3 py-2 text-sm"
+                        placeholder="分析方法"
+                      />
+                      <input
+                        value={question.analysis_goal}
+                        onChange={(event) => updateQuestionDraft(question.question_id, { analysis_goal: event.target.value })}
+                        className="rounded border border-line px-3 py-2 text-sm"
+                        placeholder="分析目的"
+                      />
+                      <input
+                        value={question.theme ?? ""}
+                        onChange={(event) => updateQuestionDraft(question.question_id, { theme: event.target.value })}
+                        className="rounded border border-line px-3 py-2 text-sm"
+                        placeholder="主题"
+                      />
+                      <input
+                        value={question.hypothesis ?? ""}
+                        onChange={(event) => updateQuestionDraft(question.question_id, { hypothesis: event.target.value })}
+                        className="rounded border border-line px-3 py-2 text-sm"
+                        placeholder="假设"
+                      />
+                    </div>
+                  )}
                 </div>
               </article>
             ))}
           </div>
 
-          <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto_auto]">
+          <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto_auto_auto]">
             <textarea
               value={revisionRequest}
               onChange={(event) => setRevisionRequest(event.target.value)}
@@ -706,6 +974,14 @@ export function SurveyPanel({ task, runId, report, plannerContext }: SurveyPanel
             >
               <Download size={16} /> {state === "exporting" ? "导出中..." : "导出 CSV"}
             </button>
+            <button
+              type="button"
+              onClick={exportResponseTemplateCsv}
+              disabled={state === "exporting"}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded border border-line bg-white px-3 text-sm font-semibold disabled:opacity-50"
+            >
+              <Download size={16} /> 导出答卷模板 CSV
+            </button>
           </div>
           {revisionSummary && <div className="rounded border border-green-300 bg-green-50 px-3 py-2 text-sm text-success">{revisionSummary}</div>}
           {revisionSummary && !analysis && (
@@ -716,7 +992,9 @@ export function SurveyPanel({ task, runId, report, plannerContext }: SurveyPanel
           {exportMessage && <div className="rounded border border-green-300 bg-green-50 px-3 py-2 text-sm text-success">{exportMessage}</div>}
           {csvPreview && (
             <div className="rounded border border-line bg-panel p-3">
-              <div className="mb-2 text-sm font-semibold">CSV 模板预览</div>
+              <div className="mb-2 text-sm font-semibold">
+                {csvPreviewMode === "survey" ? "完整问卷 CSV 预览" : "答卷模板 CSV 预览"}
+              </div>
               <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded border border-line bg-white p-3 text-xs leading-5">{csvPreview}</pre>
             </div>
           )}
@@ -755,9 +1033,13 @@ export function SurveyPanel({ task, runId, report, plannerContext }: SurveyPanel
       {uploadResult && (
         <div className="mt-4 grid gap-2 rounded border border-line bg-panel p-3 text-sm">
           <div>样本量 {uploadResult.sample_size}，有效 {uploadResult.valid_count}，无效 {uploadResult.invalid_count}</div>
-          {uploadResult.evidence && (
+          {uploadResult.evidence ? (
             <div className="rounded border border-green-300 bg-green-50 px-3 py-2 text-success">
               SurveyEvidence 已转换为标准 Evidence：source_type={uploadResult.evidence.source_type}，local_ref={uploadResult.evidence.local_ref}
+            </div>
+          ) : (
+            <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-warning">
+              当前阶段暂未自动写入知识库或标准 Evidence，页面仅展示清洗后的分析结果与知识库候选结论。
             </div>
           )}
         </div>
@@ -775,9 +1057,92 @@ export function SurveyPanel({ task, runId, report, plannerContext }: SurveyPanel
             <div className="font-semibold text-success">SurveyEvidence 摘要</div>
             <p className="mt-1 text-sm">{analysis.executive_summary || analysis.dashboard_summary}</p>
             <p className="mt-2 text-xs text-success">
-              已生成聚合 SurveyEvidence；上传流程会同步写入 source_type=survey 的标准 Evidence，不保存原始逐行隐私数据。
+              已生成聚合 SurveyEvidence 供当前页面预览；当前阶段不会自动把未人工确认的问卷结论写入知识库。
             </p>
           </div>
+          {userFacingSummary && (
+            <div className="rounded border border-accent/30 bg-accent/5 p-4">
+              <div className="font-semibold text-slate-900">整体分析结果</div>
+              <p className="mt-2 text-sm leading-7 text-slate-700">{userFacingSummary}</p>
+            </div>
+          )}
+          {dataQuality && (
+            <div className="rounded border border-line p-3">
+              <div className="font-semibold">数据清洗与可信度</div>
+              <div className="mt-2 grid gap-2 md:grid-cols-3">
+                <MetricCard label="原始样本" value={String(dataQuality.raw_count)} />
+                <MetricCard label="保留样本" value={String(dataQuality.clean_count)} />
+                <MetricCard label="剔除样本" value={String(dataQuality.removed_count)} />
+                <MetricCard label="有效率" value={formatPercent(dataQuality.valid_ratio)} />
+                <MetricCard label="质量评分" value={formatConfidence(dataQuality.quality_score)} />
+                <MetricCard label="质量评级" value={dataQuality.quality_level} />
+              </div>
+              <div className="mt-3 rounded bg-panel px-3 py-2 text-sm text-slate-700">
+                知识库准入：{dataQuality.can_enter_knowledge_base ? "可作为候选进入人工确认环节" : "当前不可进入知识库"}
+              </div>
+              {!!dataQuality.reasons?.length && (
+                <div className="mt-3">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">原因</div>
+                  <ul className="mt-1 list-disc space-y-1 pl-5 text-sm text-slate-700">
+                    {dataQuality.reasons.map((item) => <li key={item}>{item}</li>)}
+                  </ul>
+                </div>
+              )}
+              {!!dataQuality.warnings?.length && (
+                <div className="mt-3">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">警告</div>
+                  <ul className="mt-1 list-disc space-y-1 pl-5 text-sm text-slate-700">
+                    {dataQuality.warnings.map((item) => <li key={item}>{item}</li>)}
+                  </ul>
+                </div>
+              )}
+              {!!dataQuality.excluded_rows_summary?.length && (
+                <div className="mt-3">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">剔除样本摘要</div>
+                  <div className="mt-2 grid gap-2">
+                    {dataQuality.excluded_rows_summary.slice(0, 6).map((item, index) => (
+                      <div key={index} className="rounded bg-panel px-3 py-2 text-xs text-slate-700">
+                        {renderRecordSummary(item, ["row_number", "respondent_id", "reasons", "answered_count"])}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          {!!knowledgeCandidates.length && (
+            <div className="rounded border border-line p-3">
+              <div className="font-semibold">知识库候选结论</div>
+              <p className="mt-1 text-xs text-slate-500">暂未自动写入知识库，仅作为候选结论预览。</p>
+              <div className="mt-3 grid gap-2">
+                {knowledgeCandidates.map((candidate, index) => (
+                  <div key={`${candidate.title}-${index}`} className="rounded bg-panel px-3 py-3 text-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="font-medium">{candidate.title}</div>
+                      <div className="text-xs text-slate-500">
+                        {formatConfidence(candidate.confidence)} · {candidate.should_write_to_kb ? "可入库候选" : "暂不入库"}
+                      </div>
+                    </div>
+                    <p className="mt-2 text-slate-700">{candidate.content}</p>
+                    <div className="mt-2 text-xs text-slate-500">
+                      clean sample {candidate.clean_sample_size} / raw {candidate.sample_size}
+                    </div>
+                    {!!candidate.supporting_questions?.length && (
+                      <div className="mt-2 text-xs text-slate-500">支持问题：{candidate.supporting_questions.join("、")}</div>
+                    )}
+                    {!!candidate.limitations?.length && (
+                      <div className="mt-2 text-xs text-slate-500">限制：{candidate.limitations.join("；")}</div>
+                    )}
+                    {candidate.rejection_reason && (
+                      <div className="mt-2 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-warning">
+                        {candidate.rejection_reason}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {!!analysis.pain_point_validation?.length && (
             <div className="rounded border border-line p-3">
               <div className="font-semibold">痛点验证</div>
@@ -863,18 +1228,20 @@ export function SurveyPanel({ task, runId, report, plannerContext }: SurveyPanel
           {!!analysis.recommended_report_revisions?.length && (
             <div className="rounded border border-line p-3">
               <div className="font-semibold">建议回写报告</div>
-              <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-700">
+              <div className="mt-2 grid gap-2">
                 {analysis.recommended_report_revisions.map((item, index) => (
-                  <li key={index}>{renderRecordSummary(item, ["claim_id", "action", "reason", "suggested_text"])}</li>
+                  <div key={index} className="rounded bg-panel px-3 py-2 text-sm text-slate-700">
+                    {renderReportRevisionSummary(item)}
+                  </div>
                 ))}
-              </ul>
+              </div>
             </div>
           )}
-          {!!analysis.competitor_switching_analysis?.length && (
+          {!!competitorSwitchingItems.length && (
             <div className="rounded border border-line p-3">
               <div className="font-semibold">竞品切换信号</div>
               <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-700">
-                {analysis.competitor_switching_analysis.map((item, index) => (
+                {competitorSwitchingItems.map((item, index) => (
                   <li key={index}>{renderRecordSummary(item, ["competitor", "switching_risk", "summary", "reason"])}</li>
                 ))}
               </ul>
@@ -902,6 +1269,41 @@ export function SurveyPanel({ task, runId, report, plannerContext }: SurveyPanel
   );
 }
 
+function BriefRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</div>
+      <div className="rounded bg-panel px-3 py-2 text-slate-700">{value}</div>
+    </div>
+  );
+}
+
+function renderAdvancedFieldSummary(question: SurveyQuestion, painPoints: Survey["pain_points"]) {
+  const painPointLabel = painPoints.find((item) => item.pain_id === question.maps_to_pain_id)?.pain_point;
+  const summaryItems = [
+    question.metric_role ? `指标角色：${question.metric_role}` : "",
+    question.maps_to_pain_id ? `绑定痛点：${question.maps_to_pain_id}${painPointLabel ? ` · ${painPointLabel}` : ""}` : "",
+    question.theme ? `主题：${question.theme}` : "",
+    question.hypothesis ? `假设：${question.hypothesis}` : "",
+    question.research_purpose ? `研究用途：${question.research_purpose}` : "",
+    question.analysis_method ? `分析方法：${question.analysis_method}` : "",
+  ].filter(Boolean);
+
+  if (!summaryItems.length) {
+    return <div className="mt-1 text-xs text-slate-500">当前未设置高级字段，刚生成的问卷默认保持简洁。</div>;
+  }
+
+  return (
+    <div className="mt-2 flex flex-wrap gap-2">
+      {summaryItems.map((item) => (
+        <span key={item} className="rounded bg-white px-2 py-1 text-xs text-slate-600">
+          {item}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function renderRecordSummary(record: Record<string, unknown>, preferredKeys: string[]): string {
   const parts = preferredKeys
     .map((key) => record[key])
@@ -911,6 +1313,68 @@ function renderRecordSummary(record: Record<string, unknown>, preferredKeys: str
     return parts.join("；");
   }
   return JSON.stringify(record);
+}
+
+function renderReportRevisionSummary(record: Record<string, unknown>): string {
+  const target = String(record.claim_id ?? record.target ?? "未指定对象");
+  const action = String(record.action ?? record.revision_type ?? "").trim();
+  const detail = String(record.suggested_text ?? record.suggestion ?? record.reason ?? "").trim();
+
+  const actionLabelMap: Record<string, string> = {
+    strengthen: "建议强化",
+    keep_with_caution: "建议谨慎保留",
+    revise: "建议修改",
+    remove: "建议移除",
+  };
+  const actionLabel = actionLabelMap[action] ?? action;
+
+  if (actionLabel && detail) {
+    return `${target} · ${actionLabel}：${detail}`;
+  }
+  if (detail) {
+    return `${target}：${detail}`;
+  }
+  return renderRecordSummary(record, ["claim_id", "target", "action", "revision_type", "suggestion", "reason"]);
+}
+
+function buildOverallAnalysisSummary(
+  analysis?: SurveyAnalysis,
+  uploadResult?: SurveyUploadResponse,
+  dataQuality?: NonNullable<SurveyAnalysis["data_quality_assessment"]> | null
+): string {
+  const explicitSummary = analysis?.user_facing_summary?.trim() || uploadResult?.user_facing_summary?.trim();
+  if (explicitSummary) {
+    return explicitSummary;
+  }
+
+  const sampleSize = readNumber(analysis?.sample_summary?.sample_size) ?? uploadResult?.sample_size;
+  const validCount = readNumber(analysis?.sample_summary?.valid_count) ?? uploadResult?.valid_count;
+  const topFinding = Array.isArray(analysis?.key_findings)
+    ? analysis?.key_findings
+      .map((item) => String(item.finding ?? item.explanation ?? "").trim())
+      .find(Boolean)
+    : "";
+  const limitation = Array.isArray(analysis?.limitations)
+    ? analysis?.limitations.find(Boolean)
+    : "";
+  const nextQuestion = Array.isArray(analysis?.next_research_questions)
+    ? analysis?.next_research_questions.find(Boolean)
+    : "";
+
+  const parts = [
+    sampleSize !== undefined && validCount !== undefined
+      ? `本次共分析 ${sampleSize} 条反馈，其中 ${validCount} 条被纳入有效样本。`
+      : "",
+    dataQuality
+      ? `当前数据质量评级为 ${dataQuality.quality_level}，${dataQuality.can_enter_knowledge_base ? "可进入后续人工确认环节" : "暂不建议直接沉淀为知识库结论"}。`
+      : "",
+    topFinding ? `最值得关注的用户信号是：${topFinding}。` : "",
+    limitation ? `需要谨慎的是：${limitation}` : "",
+    nextQuestion ? `下一步建议优先验证：${nextQuestion}` : "",
+    !topFinding && analysis?.dashboard_summary ? String(analysis.dashboard_summary) : "",
+  ].filter(Boolean);
+
+  return parts.join(" ");
 }
 
 function readStringList(value: unknown): string[] {
@@ -931,6 +1395,10 @@ function readNumber(value: unknown): number | undefined {
 }
 
 function formatConfidence(value: unknown): string {
+  return typeof value === "number" ? `${Math.round(value * 100)}%` : "-";
+}
+
+function formatPercent(value: unknown): string {
   return typeof value === "number" ? `${Math.round(value * 100)}%` : "-";
 }
 
